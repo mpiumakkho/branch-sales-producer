@@ -1,0 +1,13 @@
+# Profile "sasl": connect to the HQ external listener (kafka.hq.example:9094) with TLS and this branch's SCRAM user.
+# Without this profile the producer uses PLAINTEXT, for the HQ host listener (IDE) and the tests.
+spring:
+  kafka:
+    security:
+      protocol: SASL_SSL
+    properties:
+      sasl.mechanism: SCRAM-SHA-512
+      # User name = branch code, created by HQ (infra/onboard-branch.sh) with the same password
+      sasl.jaas.config: org.apache.kafka.common.security.scram.ScramLoginModule required username="${branch-sales.branch-code}" password="${KAFKA_PASSWORD}";
+      # CA certificate from HQ (infra/tls/out/ca.crt); the broker certificate must be for kafka.hq.example
+      ssl.truststore.type: PEM
+      ssl.truststore.location: ${KAFKA_TRUSTSTORE:/certs/ca.crt}

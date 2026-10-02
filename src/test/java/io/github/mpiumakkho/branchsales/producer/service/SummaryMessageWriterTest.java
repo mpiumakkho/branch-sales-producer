@@ -30,7 +30,7 @@ class SummaryMessageWriterTest {
 			"RTE", "READY_MEAL");
 
 	private final SummaryMessageWriter writer = new SummaryMessageWriter(
-			new ProducerProperties("BR0001", "branch-sales.daily-summary", MAPPING,
+			new ProducerProperties("BR0001", "branch-sales.daily-summary.BR0001", MAPPING,
 					new ProducerProperties.Schedule("-", Duration.ZERO), Duration.ofSeconds(1)));
 
 	private final JsonMapper mapper = JsonMapper.builder().build();

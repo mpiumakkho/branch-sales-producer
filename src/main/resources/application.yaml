@@ -17,7 +17,7 @@ spring:
     baseline-version: 0
 
   kafka:
-    # HQ Kafka external listener (infra network branch-sales-wan); localhost:9092 when run from an IDE
+    # HQ Kafka external listener (infra network branch-sales-wan, profile "sasl"); localhost:9092 when run from an IDE
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
@@ -33,7 +33,8 @@ spring:
 branch-sales:
   # This branch's code in the HQ branch registry. Required; the producer does not start without it.
   branch-code: ${BRANCH_CODE:}
-  topic: branch-sales.daily-summary
+  # One topic per branch; the branch's SCRAM user may write only this one (HQ onboard-branch.sh)
+  topic: branch-sales.daily-summary.${branch-sales.branch-code}
   send-timeout: 40s
   schedule:
     # Q4: a round every hour (Asia/Bangkok), starting after a random delay of up to 30 minutes
