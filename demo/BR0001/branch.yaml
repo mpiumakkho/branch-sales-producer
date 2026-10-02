@@ -1,5 +1,6 @@
 # Branch BR0001: back-office category code -> HQ category code
 branch-sales:
+  branch-code: BR0001
   category-mapping:
     BEV: BEVERAGE
     SNK: SNACK

@@ -39,7 +39,7 @@ cron (every hour, Asia/Bangkok) ──► random delay 0–30 min ──► roun
 | Situation | Result |
 |---|---|
 | Broker acknowledged | `SENT`, `attempts + 1`, `event_id`, `sent_at` |
-| Data cannot form a valid message (unmapped category, negative amount, no lines, ...) | `FAILED` with `last_error`; next day in the round continues; tried again every round |
+| Data cannot form a valid message (unmapped category, negative amount, no lines, `branch_code` not the configured branch, ...) | `FAILED` with `last_error`; next day in the round continues; tried again every round |
 | Kafka not reachable | `FAILED` with `last_error`; round stops; remaining days stay pending for the next round |
 | Producer stops after the ack, before writing `SENT` | revision is sent again next round; HQ skips it as a duplicate (rule R5) |
 | Manager edits and re-confirms | new revision is pending and sent; the old revision's `SENT` row stays |
@@ -52,12 +52,19 @@ demo/sql.sh BR0001 demo/sync-attempts.sql    # attempt history of a demo branch
 
 Days and lines are read in one repeatable-read transaction, so the lines always belong to the revision that was read. Every day has key `branchCode`, so all messages of a branch go to one partition and HQ reads them in order.
 
+## Branch identity
+
+The branch code comes from configuration (`branch-sales.branch-code`), not from the back-office data. It is the record key and the `branchCode` of every message. A back-office day whose `daily_sales.branch_code` is different (a re-coded branch, a database copied from another branch) is not sent: it is logged as `FAILED`, because HQ would otherwise store it as a second row under the other code.
+
+At startup the producer checks the branch code and every mapped HQ category code against the contract patterns, and does not start if one is wrong.
+
 ## Category mapping
 
 Each back-office uses its own category codes. They are mapped to the HQ codes ([categories.md](https://github.com/mpiumakkho/branch-sales-consumer/blob/main/contract/categories.md)) in configuration. Several local codes may map to one HQ code; their amounts and quantities are added up into one line.
 
 ```yaml
 branch-sales:
+  branch-code: BR0001
   category-mapping:
     BEV: BEVERAGE
     DRINK_HOT: BEVERAGE
@@ -81,6 +88,7 @@ The full walkthrough with HQ and two branches, including the failure cases, is i
 
 | Variable | Default | |
 |---|---|---|
+| `BRANCH_CODE` | none | required: this branch's code in the HQ branch registry (`branch-sales.branch-code`). Only back-office days with this `branch_code` are sent |
 | `BRANCH_DB_URL` | `jdbc:postgresql://localhost:5434/branch` | branch back-office database |
 | `BRANCH_DB_USER` | `branch_app` | |
 | `BRANCH_DB_PASSWORD` | none | required |
