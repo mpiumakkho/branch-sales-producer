@@ -17,7 +17,8 @@ The message format is the contract in the HQ consumer repo ([branch-sales-consum
 |---|---|---|
 | `daily_sales` | back-office system | read: `sale_date`, `branch_code`, `status` (`DRAFT`/`CONFIRMED`), `revision`, `confirmed_at` |
 | `daily_sales_line` | back-office system | read: `sale_date`, local `category_code`, `amount`, `quantity` |
-| `sync_log` | producer (Flyway) | read and write: send status per `(sale_date, revision)` |
+| `sync_log` | producer (Flyway) | read and write: current send status per `(sale_date, revision)` |
+| `sync_attempt` | producer (Flyway) | insert only: one row per send attempt (time, result, error, `event_id`) |
 
 In a real branch the back-office tables already exist. Here they come from [`backoffice/postgresql/schema.sql`](backoffice/postgresql/schema.sql), and confirmation is simulated with SQL:
 
@@ -25,7 +26,7 @@ In a real branch the back-office tables already exist. Here they come from [`bac
 update daily_sales set status = 'CONFIRMED', revision = revision + 1, confirmed_at = now() where sale_date = '2026-10-01';
 ```
 
-Flyway only creates `sync_log`, with its own history table `branch_sales_flyway_history`, and baselines the existing schema at version 0. Migrations are per database vendor (`db/migration/{vendor}`); MySQL and SQL Server come in step 7. The SQL in the code uses no vendor-specific statements for the same reason.
+Flyway only creates `sync_log` and `sync_attempt`, with its own history table `branch_sales_flyway_history`, and baselines the existing schema at version 0. Migrations are per database vendor (`db/migration/{vendor}`); MySQL and SQL Server come in step 7. The SQL in the code uses no vendor-specific statements for the same reason.
 
 ## Send rounds
 
@@ -42,6 +43,12 @@ cron (every hour, Asia/Bangkok) ──► random delay 0–30 min ──► roun
 | Kafka not reachable | `FAILED` with `last_error`; round stops; remaining days stay pending for the next round |
 | Producer stops after the ack, before writing `SENT` | revision is sent again next round; HQ skips it as a duplicate (rule R5) |
 | Manager edits and re-confirms | new revision is pending and sent; the old revision's `SENT` row stays |
+
+Every attempt also adds a row to `sync_attempt`, in the same transaction as the `sync_log` update. `sync_log` keeps only the latest error (cleared on success); `sync_attempt` keeps all of them. An attempt that failed at Kafka keeps the `event_id` of its message, because such a message can still reach HQ (see the duplicate case above). There is no automatic clean-up yet: while HQ is unreachable, each pending day adds one row per round.
+
+```bash
+demo/sql.sh BR0001 demo/sync-attempts.sql    # attempt history of a demo branch
+```
 
 Days and lines are read in one repeatable-read transaction, so the lines always belong to the revision that was read. Every day has key `branchCode`, so all messages of a branch go to one partition and HQ reads them in order.
 
