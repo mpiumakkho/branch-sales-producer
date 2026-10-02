@@ -5,13 +5,19 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 
 import java.math.BigDecimal;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.IntStream;
+
+import javax.sql.DataSource;
 
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -25,7 +31,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.testcontainers.kafka.KafkaContainer;
@@ -33,12 +38,14 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import io.github.mpiumakkho.branchsales.producer.ContractSchema;
+import io.github.mpiumakkho.branchsales.producer.dto.ConfirmedSales;
 import io.github.mpiumakkho.branchsales.producer.TestcontainersConfiguration;
 import io.github.mpiumakkho.branchsales.producer.kafka.SummaryPublisher;
+import io.github.mpiumakkho.branchsales.producer.repository.PendingSalesReader;
 
 /**
- * Runs send rounds against a branch PostgreSQL with the simulated back-office
- * tables and a real Kafka broker. Rounds are started directly; the cron is off.
+ * Runs send rounds against a branch database with the simulated back-office tables and a real Kafka broker. The same
+ * tests run once per supported database (one subclass each). Rounds are started directly; the cron is off.
  */
 @SpringBootTest(properties = {
 		"branch-sales.schedule.cron=-",
@@ -47,8 +54,7 @@ import io.github.mpiumakkho.branchsales.producer.kafka.SummaryPublisher;
 		"branch-sales.category-mapping.SNK=SNACK",
 		"spring.kafka.producer.properties.delivery.timeout.ms=15000",
 		"spring.kafka.producer.properties.request.timeout.ms=5000" })
-@Import(TestcontainersConfiguration.class)
-class SendRoundTest {
+abstract class AbstractSendRoundTest {
 
 	private static final LocalDate DAY_1 = LocalDate.of(2026, 10, 1);
 	private static final LocalDate DAY_2 = LocalDate.of(2026, 10, 2);
@@ -56,6 +62,12 @@ class SendRoundTest {
 
 	@Autowired
 	SendRound round;
+
+	@Autowired
+	PendingSalesReader reader;
+
+	@Autowired
+	DataSource dataSource;
 
 	@MockitoSpyBean
 	SummaryPublisher publisher;
@@ -159,6 +171,30 @@ class SendRoundTest {
 		assertThat(attempts(DAY_1, 1)).containsExactly(
 				"FAILED error=no HQ category mapping for local category [LOTTO] event=null",
 				"FAILED error=no HQ category mapping for local category [LOTTO] event=null");
+	}
+
+	@Test
+	void readingIsNotBlockedByAnOpenBackOfficeTransaction() throws Exception {
+		insertDay(DAY_1, "CONFIRMED", 1);
+
+		// The manager starts editing the day; the back-office transaction is still open (row locked)
+		try (Connection backOffice = dataSource.getConnection()) {
+			backOffice.setAutoCommit(false);
+			try (PreparedStatement edit = backOffice.prepareStatement(
+					"update daily_sales set status = 'DRAFT' where sale_date = ?")) {
+				edit.setObject(1, DAY_1);
+				edit.executeUpdate();
+			}
+			try {
+				// Reads the last committed state from its snapshot instead of waiting for the lock (on SQL Server
+				// only with SNAPSHOT isolation; its REPEATABLE READ would wait here)
+				List<ConfirmedSales> pending = CompletableFuture.supplyAsync(reader::readPending).get(5, TimeUnit.SECONDS);
+				assertThat(pending).extracting(ConfirmedSales::saleDate).containsExactly(DAY_1);
+			}
+			finally {
+				backOffice.rollback();
+			}
+		}
 	}
 
 	@Test
