@@ -1,4 +1,4 @@
-package io.github.mpiumakkho.branchsales.producer.message;
+package io.github.mpiumakkho.branchsales.producer.exception;
 
 /**
  * The back-office data of a day cannot be written as a valid contract message

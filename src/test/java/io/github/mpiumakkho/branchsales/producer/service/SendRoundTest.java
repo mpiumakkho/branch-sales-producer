@@ -1,4 +1,4 @@
-package io.github.mpiumakkho.branchsales.producer.send;
+package io.github.mpiumakkho.branchsales.producer.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -34,6 +34,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 import io.github.mpiumakkho.branchsales.producer.ContractSchema;
 import io.github.mpiumakkho.branchsales.producer.TestcontainersConfiguration;
+import io.github.mpiumakkho.branchsales.producer.kafka.SummaryPublisher;
 
 /**
  * Runs send rounds against a branch PostgreSQL with the simulated back-office

@@ -1,4 +1,4 @@
-package io.github.mpiumakkho.branchsales.producer;
+package io.github.mpiumakkho.branchsales.producer.config;
 
 import java.time.Duration;
 import java.util.Map;

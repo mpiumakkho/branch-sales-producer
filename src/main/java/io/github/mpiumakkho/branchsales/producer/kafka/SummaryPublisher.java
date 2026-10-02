@@ -1,4 +1,4 @@
-package io.github.mpiumakkho.branchsales.producer.send;
+package io.github.mpiumakkho.branchsales.producer.kafka;
 
 import java.time.Duration;
 import java.util.concurrent.ExecutionException;
@@ -10,8 +10,8 @@ import org.springframework.core.NestedExceptionUtils;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 
-import io.github.mpiumakkho.branchsales.producer.ProducerProperties;
-import io.github.mpiumakkho.branchsales.producer.message.SummaryMessageWriter.Message;
+import io.github.mpiumakkho.branchsales.producer.config.ProducerProperties;
+import io.github.mpiumakkho.branchsales.producer.service.SummaryMessageWriter.Message;
 
 /**
  * Sends one message and waits for the broker ack ({@code acks=all}).
@@ -55,7 +55,7 @@ public class SummaryPublisher {
 
 	public static class PublishException extends RuntimeException {
 
-		PublishException(Throwable cause) {
+		public PublishException(Throwable cause) {
 			// Spring wraps the client error (e.g. KafkaProducerException "Failed to send"); the innermost cause says why
 			super("not acknowledged by Kafka: " + NestedExceptionUtils.getMostSpecificCause(cause), cause);
 		}

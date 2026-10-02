@@ -1,4 +1,4 @@
-package io.github.mpiumakkho.branchsales.producer.send;
+package io.github.mpiumakkho.branchsales.producer.scheduler;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

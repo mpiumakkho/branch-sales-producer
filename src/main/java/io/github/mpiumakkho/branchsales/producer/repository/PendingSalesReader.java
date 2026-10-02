@@ -1,4 +1,4 @@
-package io.github.mpiumakkho.branchsales.producer.backoffice;
+package io.github.mpiumakkho.branchsales.producer.repository;
 
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
@@ -12,6 +12,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
+
+import io.github.mpiumakkho.branchsales.producer.dto.ConfirmedSales;
 
 /**
  * Reads confirmed days whose current revision has not been sent yet (rule R1).

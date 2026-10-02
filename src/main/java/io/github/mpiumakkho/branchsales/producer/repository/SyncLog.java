@@ -1,4 +1,4 @@
-package io.github.mpiumakkho.branchsales.producer.synclog;
+package io.github.mpiumakkho.branchsales.producer.repository;
 
 import java.time.Clock;
 import java.time.LocalDate;

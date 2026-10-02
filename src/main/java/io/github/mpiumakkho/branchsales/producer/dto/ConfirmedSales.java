@@ -1,4 +1,4 @@
-package io.github.mpiumakkho.branchsales.producer.backoffice;
+package io.github.mpiumakkho.branchsales.producer.dto;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;

@@ -1,4 +1,4 @@
-package io.github.mpiumakkho.branchsales.producer.message;
+package io.github.mpiumakkho.branchsales.producer.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -16,9 +16,10 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import io.github.mpiumakkho.branchsales.producer.ContractSchema;
-import io.github.mpiumakkho.branchsales.producer.ProducerProperties;
-import io.github.mpiumakkho.branchsales.producer.backoffice.ConfirmedSales;
-import io.github.mpiumakkho.branchsales.producer.backoffice.ConfirmedSales.Line;
+import io.github.mpiumakkho.branchsales.producer.config.ProducerProperties;
+import io.github.mpiumakkho.branchsales.producer.dto.ConfirmedSales;
+import io.github.mpiumakkho.branchsales.producer.dto.ConfirmedSales.Line;
+import io.github.mpiumakkho.branchsales.producer.exception.InvalidSalesException;
 
 class SummaryMessageWriterTest {
 

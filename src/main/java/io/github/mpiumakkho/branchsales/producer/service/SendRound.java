@@ -1,4 +1,4 @@
-package io.github.mpiumakkho.branchsales.producer.send;
+package io.github.mpiumakkho.branchsales.producer.service;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -7,13 +7,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
-import io.github.mpiumakkho.branchsales.producer.backoffice.ConfirmedSales;
-import io.github.mpiumakkho.branchsales.producer.backoffice.PendingSalesReader;
-import io.github.mpiumakkho.branchsales.producer.message.InvalidSalesException;
-import io.github.mpiumakkho.branchsales.producer.message.SummaryMessageWriter;
-import io.github.mpiumakkho.branchsales.producer.message.SummaryMessageWriter.Message;
-import io.github.mpiumakkho.branchsales.producer.send.SummaryPublisher.PublishException;
-import io.github.mpiumakkho.branchsales.producer.synclog.SyncLog;
+import io.github.mpiumakkho.branchsales.producer.dto.ConfirmedSales;
+import io.github.mpiumakkho.branchsales.producer.exception.InvalidSalesException;
+import io.github.mpiumakkho.branchsales.producer.kafka.SummaryPublisher;
+import io.github.mpiumakkho.branchsales.producer.kafka.SummaryPublisher.PublishException;
+import io.github.mpiumakkho.branchsales.producer.repository.PendingSalesReader;
+import io.github.mpiumakkho.branchsales.producer.repository.SyncLog;
+import io.github.mpiumakkho.branchsales.producer.service.SummaryMessageWriter.Message;
 
 /**
  * One send round: every pending confirmed day, oldest first.

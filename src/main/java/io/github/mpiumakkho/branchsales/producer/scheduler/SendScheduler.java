@@ -1,4 +1,4 @@
-package io.github.mpiumakkho.branchsales.producer.send;
+package io.github.mpiumakkho.branchsales.producer.scheduler;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -10,7 +10,8 @@ import org.springframework.scheduling.TaskScheduler;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
-import io.github.mpiumakkho.branchsales.producer.ProducerProperties;
+import io.github.mpiumakkho.branchsales.producer.config.ProducerProperties;
+import io.github.mpiumakkho.branchsales.producer.service.SendRound;
 
 /**
  * Starts a send round on the configured cron (default: every hour, Q4), after a
