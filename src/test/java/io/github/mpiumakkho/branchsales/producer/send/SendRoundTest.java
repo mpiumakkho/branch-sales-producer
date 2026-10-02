@@ -74,6 +74,7 @@ class SendRoundTest {
 
 	@BeforeEach
 	void setUp() {
+		jdbc.sql("delete from sync_attempt").update();
 		jdbc.sql("delete from sync_log").update();
 		jdbc.sql("delete from daily_sales_line").update();
 		jdbc.sql("delete from daily_sales").update();
@@ -104,6 +105,7 @@ class SendRoundTest {
 				.containsEntry("event_id", json.get("eventId").asString())
 				.containsEntry("last_error", null);
 		assertThat(syncLog(DAY_1, 1).get("sent_at")).isNotNull();
+		assertThat(attempts(DAY_1, 1)).containsExactly("SENT error=null event=" + json.get("eventId").asString());
 
 		// Nothing pending any more: the next round sends nothing
 		assertThat(round.run()).isEqualTo(new SendRound.Result(0, 0, 0));
@@ -151,6 +153,10 @@ class SendRoundTest {
 		// Still pending: tried again every round until the data or the mapping is fixed
 		assertThat(round.run()).isEqualTo(new SendRound.Result(1, 0, 1));
 		assertThat(syncLog(DAY_1, 1)).containsEntry("attempts", 2);
+		// History keeps both attempts; no message was written, so no eventId
+		assertThat(attempts(DAY_1, 1)).containsExactly(
+				"FAILED error=no HQ category mapping for local category [LOTTO] event=null",
+				"FAILED error=no HQ category mapping for local category [LOTTO] event=null");
 	}
 
 	@Test
@@ -174,6 +180,16 @@ class SendRoundTest {
 				.containsExactly("2026-10-01", "2026-10-02");
 		assertThat(syncLog(DAY_1, 1)).containsEntry("status", "SENT").containsEntry("attempts", 2)
 				.containsEntry("last_error", null);
+
+		// sync_log no longer shows the first error; sync_attempt does, with the eventId of the unacknowledged message
+		List<String> history = attempts(DAY_1, 1);
+		assertThat(history).hasSize(2);
+		assertThat(history.get(0)).startsWith("FAILED error=not acknowledged by Kafka: java.lang.RuntimeException: simulated")
+				.doesNotEndWith("event=null");
+		String sentEventId = mapper.readTree(records.get(0).value()).get("eventId").asString();
+		assertThat(history.get(1)).isEqualTo("SENT error=null event=" + sentEventId);
+		assertThat(history.get(0)).doesNotEndWith(sentEventId); // a new eventId for each attempt
+		assertThat(attempts(DAY_2, 1)).hasSize(1).first().asString().startsWith("SENT");
 	}
 
 	@Test
@@ -214,6 +230,18 @@ class SendRoundTest {
 				.query()
 				.listOfRows()
 				.stream().findFirst().orElse(Map.of());
+	}
+
+	/** sync_attempt rows in insert order, as "RESULT error=... event=..." */
+	private List<String> attempts(LocalDate day, int revision) {
+		return jdbc.sql("""
+				select result, error, event_id from sync_attempt
+				 where sale_date = ? and revision = ?
+				 order by id
+				""")
+				.params(day, revision)
+				.query((rs, n) -> rs.getString("result") + " error=" + rs.getString("error") + " event=" + rs.getString("event_id"))
+				.list();
 	}
 
 	private KafkaConsumer<String, byte[]> openTopicReaderAtEnd() {

@@ -71,7 +71,7 @@ public class SendRound {
 			}
 			catch (InvalidSalesException e) {
 				log.warn("Not sent {} revision {}: {}", sales.saleDate(), sales.revision(), e.getMessage());
-				syncLog.markFailed(sales.saleDate(), sales.revision(), e.getMessage());
+				syncLog.markFailed(sales.saleDate(), sales.revision(), e.getMessage(), null);
 				failed++;
 				continue;
 			}
@@ -81,7 +81,7 @@ public class SendRound {
 			catch (PublishException e) {
 				log.warn("Send failed for {} revision {}, stopping this round ({} days left pending): {}",
 						sales.saleDate(), sales.revision(), pending.size() - sent - failed - 1, e.getMessage());
-				syncLog.markFailed(sales.saleDate(), sales.revision(), e.getMessage());
+				syncLog.markFailed(sales.saleDate(), sales.revision(), e.getMessage(), message.eventId());
 				failed++;
 				break;
 			}
