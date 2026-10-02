@@ -1,0 +1,14 @@
+# Demo branch BR0002: a different back-office with numeric category codes (C01, C02, ...)
+name: branch-br0002
+
+services:
+  branch-db:
+    ports:
+      - "5435:5432"
+  producer:
+    volumes:
+      - ./demo/BR0002/branch.yaml:/config/branch.yaml:ro
+    environment:
+      # Demo only: a round every minute with up to 15 s delay, instead of every hour with up to 30 min
+      SEND_CRON: "0 * * * * *"
+      SEND_MAX_JITTER: 15s

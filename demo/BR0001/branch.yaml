@@ -1,0 +1,7 @@
+# Branch BR0001: back-office category code -> HQ category code
+branch-sales:
+  category-mapping:
+    BEV: BEVERAGE
+    SNK: SNACK
+    RTE: READY_MEAL
+    HH: HOUSEHOLD

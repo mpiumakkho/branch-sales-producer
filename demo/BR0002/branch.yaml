@@ -1,0 +1,10 @@
+# Branch BR0002: back-office category code -> HQ category code
+# C01 (soft drinks) and C02 (coffee counter) are both BEVERAGE at HQ; the producer adds them up into one line.
+# C99 (lottery) is deliberately not mapped, to show what happens with an unmapped code (see demo/README.md).
+branch-sales:
+  category-mapping:
+    C01: BEVERAGE
+    C02: BEVERAGE
+    C03: SNACK
+    C05: FRESH_FOOD
+    C08: PERSONAL_CARE
