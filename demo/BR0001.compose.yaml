@@ -12,3 +12,5 @@ services:
       # Demo only: a round every minute with up to 15 s delay, instead of every hour with up to 30 min
       SEND_CRON: "0 * * * * *"
       SEND_MAX_JITTER: 15s
+      # SCRAM password of user BR0001, the same value HQ used in onboard-branch.sh
+      KAFKA_PASSWORD: ${BR0001_KAFKA_PASSWORD:?set BR0001_KAFKA_PASSWORD in .env}

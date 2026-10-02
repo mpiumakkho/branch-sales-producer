@@ -40,8 +40,13 @@ services:
       BRANCH_DB_URL: jdbc:postgresql://branch-db:5432/branch
       BRANCH_DB_PASSWORD: ${BRANCH_DB_PASSWORD:?set BRANCH_DB_PASSWORD in .env}
       KAFKA_BOOTSTRAP_SERVERS: kafka.hq.example:9094
+      # TLS + SCRAM to the HQ external listener; the password is set per branch in the override file
+      SPRING_PROFILES_ACTIVE: sasl
       # Branch configuration file, mounted by the override file
       SPRING_CONFIG_ADDITIONAL_LOCATION: file:/config/branch.yaml
+    volumes:
+      # CA certificate that signed the HQ broker certificate
+      - ${HQ_CA_CERT:?set HQ_CA_CERT in .env}:/certs/ca.crt:ro
     networks:
       - branch
       - wan
