@@ -1,0 +1,42 @@
+spring:
+  application:
+    name: branch-sales-producer
+
+  datasource:
+    # Branch back-office database
+    url: ${BRANCH_DB_URL:jdbc:postgresql://localhost:5434/branch}
+    username: ${BRANCH_DB_USER:branch_app}
+    password: ${BRANCH_DB_PASSWORD}
+
+  flyway:
+    # Only sync_log is migrated. A separate history table, in case the back-office system uses Flyway itself.
+    table: branch_sales_flyway_history
+    locations: classpath:db/migration/{vendor}
+    # The branch database is never empty (back-office tables). Baseline at 0 so that V1 (sync_log) still runs.
+    baseline-on-migrate: true
+    baseline-version: 0
+
+  kafka:
+    # HQ Kafka external listener (infra network branch-sales-wan); localhost:9092 when run from an IDE
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+        # Fail a send within ~30 s when HQ is not reachable, instead of the 120 s / 60 s client defaults
+        delivery.timeout.ms: 30000
+        request.timeout.ms: 10000
+        max.block.ms: 10000
+
+branch-sales:
+  topic: branch-sales.daily-summary
+  send-timeout: 40s
+  schedule:
+    # Q4: a round every hour (Asia/Bangkok), starting after a random delay of up to 30 minutes
+    cron: ${SEND_CRON:0 0 * * * *}
+    max-jitter: ${SEND_MAX_JITTER:30m}
+  # Back-office category code -> HQ category code (contract/categories.md in the consumer repo).
+  # Set per branch; a day with an unmapped code is not sent and is logged as FAILED in sync_log.
+  category-mapping: {}
