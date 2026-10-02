@@ -9,6 +9,7 @@ The message format is the contract in the HQ consumer repo ([branch-sales-consum
 | `src/` | The producer (Java 25, Spring Boot 4) |
 | [`backoffice/`](backoffice/) | Simulated back-office tables, for tests and the demo |
 | [`contract/`](contract/) | Copy of the contract schema, test only |
+| [`demo/`](demo/) | Two demo branches (configuration, simulated manager actions) for the end-to-end demo |
 
 ## Branch database
 
@@ -56,6 +57,19 @@ branch-sales:
     SNK: SNACK
 ```
 
+## Run with Docker
+
+[`docker-compose.yml`](docker-compose.yml) runs one branch: a back-office PostgreSQL with the simulated tables, and the producer. The producer joins the HQ network `branch-sales-wan` (created by the HQ infra in the consumer repo) and reaches Kafka at `kafka.hq.example:9094`. Each branch is started with its own override file, which sets the project name, the database port and the branch configuration:
+
+```bash
+cp .env.example .env    # set BRANCH_DB_PASSWORD
+docker compose -f docker-compose.yml -f demo/BR0001.compose.yaml up -d --build
+demo/sql.sh BR0001 demo/BR0001/01-enter-and-confirm.sql    # the manager enters and confirms a day
+demo/sql.sh BR0001 demo/branch-status.sql                  # days and their sync_log status
+```
+
+The full walkthrough with HQ and two branches, including the failure cases, is in the consumer repo: [demo/README.md](https://github.com/mpiumakkho/branch-sales-consumer/blob/main/demo/README.md).
+
 ## Configuration
 
 | Variable | Default | |
@@ -66,6 +80,7 @@ branch-sales:
 | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | HQ Kafka; from the `branch-sales-wan` network use `kafka.hq.example:9094` |
 | `SEND_CRON` | `0 0 * * * *` | round start times (Spring cron, Asia/Bangkok); `-` disables rounds |
 | `SEND_MAX_JITTER` | `30m` | upper bound of the random delay before each round |
+| `SPRING_CONFIG_ADDITIONAL_LOCATION` | none | extra configuration file, e.g. the branch's category mapping (`file:/config/branch.yaml` in Docker) |
 
 Kafka producer: `acks=all`, idempotence on, a send fails after about 30 s if HQ is not reachable.
 
