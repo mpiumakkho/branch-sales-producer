@@ -1,6 +1,6 @@
 # branch-sales-producer
 
-Branch side of Branch Daily Sales Sync. One instance runs at every branch. It reads the days the branch manager has confirmed in the branch back-office database and sends them to the HQ Kafka topic `branch-sales.daily-summary`.
+Branch side of Branch Daily Sales Sync. One instance runs at every branch. It reads the days the branch manager has confirmed in the branch back-office database and sends them to its own HQ Kafka topic `branch-sales.daily-summary.<branchCode>`, logged in with its own Kafka user over TLS.
 
 The message format is the contract in the HQ consumer repo ([branch-sales-consumer/contract](https://github.com/mpiumakkho/branch-sales-consumer/tree/main/contract)). The two sides share no code; [`contract/`](contract/) holds a copy of the schema that the tests check every message against.
 
@@ -73,10 +73,10 @@ branch-sales:
 
 ## Run with Docker
 
-[`docker-compose.yml`](docker-compose.yml) runs one branch: a back-office PostgreSQL with the simulated tables, and the producer. The producer joins the HQ network `branch-sales-wan` (created by the HQ infra in the consumer repo) and reaches Kafka at `kafka.hq.example:9094`. Each branch is started with its own override file, which sets the project name, the database port and the branch configuration:
+[`docker-compose.yml`](docker-compose.yml) runs one branch: a back-office PostgreSQL with the simulated tables, and the producer. The producer joins the HQ network `branch-sales-wan` (created by the HQ infra in the consumer repo) and reaches Kafka at `kafka.hq.example:9094` with profile `sasl` (TLS + SCRAM). HQ must have onboarded the branch first (`infra/onboard-branch.sh` in the consumer repo) with the same password. Each branch is started with its own override file, which sets the project name, the database port and the branch configuration:
 
 ```bash
-cp .env.example .env    # set BRANCH_DB_PASSWORD
+cp .env.example .env    # set BRANCH_DB_PASSWORD, BR0001_KAFKA_PASSWORD, HQ_CA_CERT
 docker compose -f docker-compose.yml -f demo/BR0001.compose.yaml up -d --build
 demo/sql.sh BR0001 demo/BR0001/01-enter-and-confirm.sql    # the manager enters and confirms a day
 demo/sql.sh BR0001 demo/branch-status.sql                  # days and their sync_log status
@@ -92,12 +92,17 @@ The full walkthrough with HQ and two branches, including the failure cases, is i
 | `BRANCH_DB_URL` | `jdbc:postgresql://localhost:5434/branch` | branch back-office database |
 | `BRANCH_DB_USER` | `branch_app` | |
 | `BRANCH_DB_PASSWORD` | none | required |
-| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | HQ Kafka; from the `branch-sales-wan` network use `kafka.hq.example:9094` |
+| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | HQ Kafka; from the `branch-sales-wan` network use `kafka.hq.example:9094` with profile `sasl` |
+| `SPRING_PROFILES_ACTIVE` | none | `sasl` for the HQ external listener: TLS + SCRAM-SHA-512, user = branch code ([application-sasl.yaml](src/main/resources/application-sasl.yaml)). Without it the producer uses PLAINTEXT (HQ host listener from an IDE, tests) |
+| `KAFKA_PASSWORD` | none | profile `sasl`: the branch's SCRAM password, from HQ |
+| `KAFKA_TRUSTSTORE` | `/certs/ca.crt` | profile `sasl`: CA certificate from HQ (PEM) |
 | `SEND_CRON` | `0 0 * * * *` | round start times (Spring cron, Asia/Bangkok); `-` disables rounds |
 | `SEND_MAX_JITTER` | `30m` | upper bound of the random delay before each round |
 | `SPRING_CONFIG_ADDITIONAL_LOCATION` | none | extra configuration file, e.g. the branch's category mapping (`file:/config/branch.yaml` in Docker) |
 
-Kafka producer: `acks=all`, idempotence on, a send fails after about 30 s if HQ is not reachable.
+Kafka producer: `acks=all`, idempotence on, a send fails after about 30 s if HQ is not reachable. The topic is `branch-sales.daily-summary.<branch-code>`; the branch's Kafka user may write no other topic, and HQ rejects a message whose `branchCode` is not the topic's branch.
+
+If HQ revokes the branch (`offboard-branch.sh`), sends fail with `TopicAuthorizationException` and the days stay pending (`FAILED`). After HQ onboards it again with a new password, update `KAFKA_PASSWORD` and restart the producer; the next round sends them.
 
 ## Test
 
