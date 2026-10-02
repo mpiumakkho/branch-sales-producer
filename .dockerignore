@@ -1,0 +1,8 @@
+target/
+demo/
+backoffice/
+contract/
+.git/
+.idea/
+.vscode/
+*.env

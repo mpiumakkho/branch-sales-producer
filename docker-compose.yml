@@ -1,0 +1,56 @@
+# One branch: a simulated back-office database and the producer.
+# Each branch is started with its own override file in demo/, which sets the project name, the database port,
+# and the branch configuration (category mapping):
+#
+#   docker compose -f docker-compose.yml -f demo/BR0001.compose.yaml up -d --build
+#
+# Networks
+#   branch            - per branch (one per compose project): producer + branch DB
+#   branch-sales-wan  - created by the HQ infra; stands in for the internet. The producer reaches Kafka only
+#                       through kafka.hq.example:9094 and cannot reach the HQ DB.
+
+services:
+  branch-db:
+    image: postgres:18.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: branch
+      POSTGRES_USER: branch_app
+      POSTGRES_PASSWORD: ${BRANCH_DB_PASSWORD:?set BRANCH_DB_PASSWORD in .env}
+    volumes:
+      # Simulated back-office tables, created on first start
+      - ./backoffice/postgresql/schema.sql:/docker-entrypoint-initdb.d/01-backoffice-schema.sql:ro
+      - branch-db-data:/var/lib/postgresql
+    networks:
+      - branch
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U branch_app -d branch"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  producer:
+    build: .
+    image: branch-sales-producer:local
+    restart: unless-stopped
+    depends_on:
+      branch-db:
+        condition: service_healthy
+    environment:
+      BRANCH_DB_URL: jdbc:postgresql://branch-db:5432/branch
+      BRANCH_DB_PASSWORD: ${BRANCH_DB_PASSWORD:?set BRANCH_DB_PASSWORD in .env}
+      KAFKA_BOOTSTRAP_SERVERS: kafka.hq.example:9094
+      # Branch configuration file, mounted by the override file
+      SPRING_CONFIG_ADDITIONAL_LOCATION: file:/config/branch.yaml
+    networks:
+      - branch
+      - wan
+
+volumes:
+  branch-db-data:
+
+networks:
+  branch: {}
+  wan:
+    name: branch-sales-wan
+    external: true
