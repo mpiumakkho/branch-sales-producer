@@ -1,5 +1,7 @@
 # branch-sales-producer
 
+[![ci](https://github.com/mpiumakkho/branch-sales-producer/actions/workflows/ci.yml/badge.svg)](https://github.com/mpiumakkho/branch-sales-producer/actions/workflows/ci.yml)
+
 Branch side of Branch Daily Sales Sync. One instance runs at every branch. It reads the days the branch manager has confirmed in the branch back-office database and sends them to its own HQ Kafka topic `branch-sales.daily-summary.<branchCode>`, logged in with its own Kafka user over TLS.
 
 The message format is the contract in the HQ consumer repo ([branch-sales-consumer/contract](https://github.com/mpiumakkho/branch-sales-consumer/tree/main/contract)). The two sides share no code; [`contract/`](contract/) holds a copy of the schema that the tests check every message against.
