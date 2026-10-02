@@ -22,13 +22,30 @@ The message format is the contract in the HQ consumer repo ([branch-sales-consum
 | `sync_log` | producer (Flyway) | read and write: current send status per `(sale_date, revision)` |
 | `sync_attempt` | producer (Flyway) | insert only: one row per send attempt (time, result, error, `event_id`) |
 
-In a real branch the back-office tables already exist. Here they come from [`backoffice/postgresql/schema.sql`](backoffice/postgresql/schema.sql), and confirmation is simulated with SQL:
+In a real branch the back-office tables already exist. Here they come from `backoffice/<database>/schema.sql`, and confirmation is simulated with SQL:
 
 ```sql
 update daily_sales set status = 'CONFIRMED', revision = revision + 1, confirmed_at = now() where sale_date = '2026-10-01';
 ```
 
-Flyway only creates `sync_log` and `sync_attempt`, with its own history table `branch_sales_flyway_history`, and baselines the existing schema at version 0. Migrations are per database vendor (`db/migration/{vendor}`); MySQL and SQL Server come in step 7. The SQL in the code uses no vendor-specific statements for the same reason.
+Flyway only creates `sync_log` and `sync_attempt`, with its own history table `branch_sales_flyway_history`, and baselines the existing schema at version 0. Migrations are per database vendor (`db/migration/{vendor}`). The SQL in the code uses no vendor-specific statements.
+
+### Supported databases
+
+One producer build for every branch; the database is chosen by `BRANCH_DB_URL`.
+
+| Database | Tested with | `BRANCH_DB_URL` example | Back-office schema | Branch requirement |
+|---|---|---|---|---|
+| PostgreSQL | 18.6 | `jdbc:postgresql://host:5432/branch` | [backoffice/postgresql](backoffice/postgresql/schema.sql) | — |
+| MySQL | 8.4 | `jdbc:mysql://host:3306/branch?connectionTimeZone=Asia/Bangkok` | [backoffice/mysql](backoffice/mysql/schema.sql) | `connectionTimeZone=Asia/Bangkok` in the URL: the back-office stores local time without a zone (`DATETIME`), which must be read as Bangkok time (rule R7) |
+| SQL Server | 2022 | `jdbc:sqlserver://host:1433;databaseName=branch;encrypt=true;trustServerCertificate=false` | [backoffice/sqlserver](backoffice/sqlserver/schema.sql) | `ALLOW_SNAPSHOT_ISOLATION ON` for the database (one-time DBA setting, see below) |
+
+Days and lines are read in one read-only transaction that sees one snapshot, so the lines always belong to the revision that was read and the producer never blocks the back-office's writes:
+
+- PostgreSQL and MySQL (InnoDB): `REPEATABLE READ`, which reads from a snapshot.
+- SQL Server: `SNAPSHOT`. Its `REPEATABLE READ` takes shared locks instead, which would make back-office writes wait and could deadlock with them. `SNAPSHOT` needs `ALTER DATABASE <db> SET ALLOW_SNAPSHOT_ISOLATION ON`; it adds row versions in `tempdb` and does not change how other transactions behave.
+
+`readingIsNotBlockedByAnOpenBackOfficeTransaction` checks this on all three: with the day locked by an open back-office transaction, the producer still reads the last committed state within 5 seconds. With SQL Server's default isolation, that test times out.
 
 ## Send rounds
 
@@ -52,7 +69,7 @@ Every attempt also adds a row to `sync_attempt`, in the same transaction as the 
 demo/sql.sh BR0001 demo/sync-attempts.sql    # attempt history of a demo branch
 ```
 
-Days and lines are read in one repeatable-read transaction, so the lines always belong to the revision that was read. Every day has key `branchCode`, so all messages of a branch go to one partition and HQ reads them in order.
+Days and lines are read from one snapshot ([Supported databases](#supported-databases)). Every day has key `branchCode`, so all messages of a branch go to one partition and HQ reads them in order.
 
 ## Branch identity
 
@@ -91,7 +108,7 @@ The full walkthrough with HQ and two branches, including the failure cases, is i
 | Variable | Default | |
 |---|---|---|
 | `BRANCH_CODE` | none | required: this branch's code in the HQ branch registry (`branch-sales.branch-code`). Only back-office days with this `branch_code` are sent |
-| `BRANCH_DB_URL` | `jdbc:postgresql://localhost:5434/branch` | branch back-office database |
+| `BRANCH_DB_URL` | `jdbc:postgresql://localhost:5434/branch` | branch back-office database: PostgreSQL, MySQL or SQL Server ([examples](#supported-databases)) |
 | `BRANCH_DB_USER` | `branch_app` | |
 | `BRANCH_DB_PASSWORD` | none | required |
 | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | HQ Kafka; from the `branch-sales-wan` network use `kafka.hq.example:9094` with profile `sasl` |
@@ -112,10 +129,10 @@ If HQ revokes the branch (`offboard-branch.sh`), sends fail with `TopicAuthoriza
 ./mvnw test
 ```
 
-Needs JDK 25 and Docker. Tests start their own PostgreSQL (with the back-office tables) and Kafka containers.
+Needs JDK 25 and Docker. Tests start their own Kafka and branch database containers (PostgreSQL, MySQL and SQL Server, each with the back-office tables). The SQL Server image is about 1.5 GB and needs 2 GB of memory.
 
 | Test | Checks |
 |---|---|
 | `SummaryMessageWriterTest` | messages are valid against the contract schema; money format, Bangkok time with seconds, category mapping and merging, data rejected before sending |
-| `SendRoundTest` | only confirmed revisions are sent, once; re-confirmation sends the new revision; `sync_log` contents; a bad day does not block other days; Kafka failure (simulated and with the broker paused) stops the round and the next round sends everything in date order |
+| `PostgresSendRoundTest`, `MySqlSendRoundTest`, `SqlServerSendRoundTest` | the same tests ([AbstractSendRoundTest](src/test/java/io/github/mpiumakkho/branchsales/producer/service/AbstractSendRoundTest.java)) on each database: only confirmed revisions are sent, once; re-confirmation sends the new revision; `sync_log` and `sync_attempt` contents; a bad day does not block other days; reading is not blocked by an open back-office transaction; Kafka failure (simulated and with the broker paused) stops the round and the next round sends everything in date order |
 | `SendSchedulerTest` | random delay stays between 0 and the maximum |
