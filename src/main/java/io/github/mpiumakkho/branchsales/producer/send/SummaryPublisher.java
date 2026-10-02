@@ -6,6 +6,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 import org.apache.kafka.common.KafkaException;
+import org.springframework.core.NestedExceptionUtils;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 
@@ -44,7 +45,7 @@ public class SummaryPublisher {
 		}
 		catch (org.springframework.kafka.KafkaException e) {
 			// Thrown by send() itself, e.g. no topic metadata within max.block.ms when the broker is not reachable
-			throw new PublishException(e.getCause() != null ? e.getCause() : e);
+			throw new PublishException(e);
 		}
 		catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
@@ -55,7 +56,8 @@ public class SummaryPublisher {
 	public static class PublishException extends RuntimeException {
 
 		PublishException(Throwable cause) {
-			super("not acknowledged by Kafka: " + cause, cause);
+			// Spring wraps the client error (e.g. KafkaProducerException "Failed to send"); the innermost cause says why
+			super("not acknowledged by Kafka: " + NestedExceptionUtils.getMostSpecificCause(cause), cause);
 		}
 	}
 }
