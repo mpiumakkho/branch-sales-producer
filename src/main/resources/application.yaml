@@ -31,6 +31,8 @@ spring:
         max.block.ms: 10000
 
 branch-sales:
+  # This branch's code in the HQ branch registry. Required; the producer does not start without it.
+  branch-code: ${BRANCH_CODE:}
   topic: branch-sales.daily-summary
   send-timeout: 40s
   schedule:

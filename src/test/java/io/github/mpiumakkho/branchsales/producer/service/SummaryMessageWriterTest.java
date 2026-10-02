@@ -30,7 +30,7 @@ class SummaryMessageWriterTest {
 			"RTE", "READY_MEAL");
 
 	private final SummaryMessageWriter writer = new SummaryMessageWriter(
-			new ProducerProperties("branch-sales.daily-summary", MAPPING,
+			new ProducerProperties("BR0001", "branch-sales.daily-summary", MAPPING,
 					new ProducerProperties.Schedule("-", Duration.ZERO), Duration.ofSeconds(1)));
 
 	private final JsonMapper mapper = JsonMapper.builder().build();
@@ -118,6 +118,14 @@ class SummaryMessageWriterTest {
 		assertInvalid(sales(new Line("BEV", new BigDecimal("1.005"), 1)), "amount with more than 2 decimals for category BEV");
 		assertInvalid(new ConfirmedSales("BR0001", LocalDate.of(2026, 10, 1), 1, null,
 				List.of(new Line("BEV", BigDecimal.ONE, 1))), "confirmed day has no confirmed_at");
+	}
+
+	@Test
+	void rejectsDayOfAnotherBranch() {
+		// e.g. the back-office database was copied from another branch
+		assertInvalid(new ConfirmedSales("BR0009", LocalDate.of(2026, 10, 1), 1,
+				OffsetDateTime.parse("2026-10-01T21:45:00+07:00"), List.of(new Line("BEV", BigDecimal.ONE, 1))),
+				"daily_sales.branch_code 'BR0009' does not match configured branch code BR0001");
 	}
 
 	private void assertInvalid(ConfirmedSales sales, String message) {

@@ -42,6 +42,7 @@ import io.github.mpiumakkho.branchsales.producer.kafka.SummaryPublisher;
  */
 @SpringBootTest(properties = {
 		"branch-sales.schedule.cron=-",
+		"branch-sales.branch-code=BR0001",
 		"branch-sales.category-mapping.BEV=BEVERAGE",
 		"branch-sales.category-mapping.SNK=SNACK",
 		"spring.kafka.producer.properties.delivery.timeout.ms=15000",
@@ -158,6 +159,17 @@ class SendRoundTest {
 		assertThat(attempts(DAY_1, 1)).containsExactly(
 				"FAILED error=no HQ category mapping for local category [LOTTO] event=null",
 				"FAILED error=no HQ category mapping for local category [LOTTO] event=null");
+	}
+
+	@Test
+	void dayWithAnotherBranchCodeIsNotSent() {
+		insertDay(DAY_1, "CONFIRMED", 1);
+		jdbc.sql("update daily_sales set branch_code = 'BR0009' where sale_date = ?").param(DAY_1).update();
+
+		assertThat(round.run()).isEqualTo(new SendRound.Result(1, 0, 1));
+		assertThat(syncLog(DAY_1, 1)).containsEntry("status", "FAILED")
+				.containsEntry("last_error", "daily_sales.branch_code 'BR0009' does not match configured branch code BR0001");
+		assertThat(topicReader.poll(Duration.ofSeconds(1))).isEmpty();
 	}
 
 	@Test

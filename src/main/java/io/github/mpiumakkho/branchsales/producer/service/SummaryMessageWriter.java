@@ -35,9 +35,11 @@ public class SummaryMessageWriter {
 	private static final BigDecimal MAX_AMOUNT = new BigDecimal("999999999999.99");
 
 	private final JsonMapper mapper = JsonMapper.builder().build();
+	private final String branchCode;
 	private final Map<String, String> categoryMapping;
 
 	public SummaryMessageWriter(ProducerProperties properties) {
+		this.branchCode = properties.branchCode();
 		this.categoryMapping = properties.categoryMapping();
 	}
 
@@ -48,6 +50,10 @@ public class SummaryMessageWriter {
 	 * @throws InvalidSalesException if the day cannot be written as a valid message
 	 */
 	public Message write(ConfirmedSales sales) {
+		// The branch identity comes from configuration. A back-office row with another code (re-coded branch, database
+		// copied from another branch) would otherwise create a second HQ row for the same day under that code.
+		check(branchCode.equals(sales.branchCode()),
+				"daily_sales.branch_code '" + sales.branchCode() + "' does not match configured branch code " + branchCode);
 		check(sales.confirmedAt() != null, "confirmed day has no confirmed_at");
 		Map<String, HqLine> lines = toHqLines(sales.lines());
 		BigDecimal total = lines.values().stream().map(HqLine::amount).reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -57,7 +63,7 @@ public class SummaryMessageWriter {
 		ObjectNode root = mapper.createObjectNode();
 		root.put("schemaVersion", 1);
 		root.put("eventId", eventId.toString());
-		root.put("branchCode", sales.branchCode());
+		root.put("branchCode", branchCode);
 		root.put("saleDate", sales.saleDate().toString());
 		root.put("revision", sales.revision());
 		root.put("confirmedAt", CONFIRMED_AT.format(sales.confirmedAt().atZoneSameInstant(BANGKOK)));
@@ -70,7 +76,7 @@ public class SummaryMessageWriter {
 				.put("quantity", line.quantity()));
 
 		// Key = branchCode: all days of one branch go to the same partition, in order
-		return new Message(eventId, sales.branchCode(), mapper.writeValueAsBytes(root));
+		return new Message(eventId, branchCode, mapper.writeValueAsBytes(root));
 	}
 
 	/** Maps local codes to HQ codes. Local codes that map to the same HQ code are added up into one line. */
