@@ -4,7 +4,7 @@ name: branch-br0002
 services:
   branch-db:
     ports:
-      # This machine only: demo/sql.sh stands in for the back-office system
+      # This machine only: demo-branches/sql.sh stands in for the back-office system
       - "127.0.0.1:5435:5432"
   kafka:
     environment:
@@ -25,7 +25,7 @@ services:
           - kafka.br0002.example
   producer:
     volumes:
-      - ./demo/BR0002/branch.yaml:/config/branch.yaml:ro
+      - ./demo-branches/BR0002/branch.yaml:/config/branch.yaml:ro
     environment:
       # Demo only: a round every minute with up to 15 s delay, instead of every hour with up to 30 min
       SEND_CRON: "0 * * * * *"

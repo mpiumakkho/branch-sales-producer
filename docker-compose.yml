@@ -1,9 +1,9 @@
 # One branch: simulated back-office database, the branch's own Kafka broker and MongoDB, the edge that HQ connects
-# through, and the producer (requirements §16). Always started with the branch's override file in demo/, which sets
+# through, and the producer (requirements §16). Always started with the branch's override file in demo-branches/, which sets
 # the project name, the branch's host name (kafka.<branch>.example), its broker certificate, HQ's password and the
 # branch configuration:
 #
-#   docker compose -f docker-compose.yml -f demo/BR0001.compose.yaml up -d --build
+#   docker compose -f docker-compose.yml -f demo-branches/BR0001.compose.yaml up -d --build
 #
 # Networks
 #   branch            - per branch (one per compose project): everything except the edge's outside

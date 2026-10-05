@@ -54,18 +54,18 @@ jobs:
           EOF
       - name: Start the branch Kafka, kafka-init and edge
         run: |
-          docker compose -f docker-compose.yml -f demo/BR0001.compose.yaml up -d kafka-init edge
+          docker compose -f docker-compose.yml -f demo-branches/BR0001.compose.yaml up -d kafka-init edge
           for _ in $(seq 1 60); do
             state=$(docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' branch-br0001-kafka-init-1 2>/dev/null || true)
             [[ "$state" == "exited 0" ]] && break
-            [[ "$state" == exited* ]] && { docker compose -f docker-compose.yml -f demo/BR0001.compose.yaml logs kafka kafka-init; exit 1; }
+            [[ "$state" == exited* ]] && { docker compose -f docker-compose.yml -f demo-branches/BR0001.compose.yaml logs kafka kafka-init; exit 1; }
             sleep 5
           done
-          [[ "$state" == "exited 0" ]] || { docker compose -f docker-compose.yml -f demo/BR0001.compose.yaml logs; exit 1; }
+          [[ "$state" == "exited 0" ]] || { docker compose -f docker-compose.yml -f demo-branches/BR0001.compose.yaml logs; exit 1; }
       - run: HQ_KAFKA_PASSWORD=ci-hq-$GITHUB_RUN_ID ./smoke-test.sh BR0001 ci-tls/ca.crt
       - name: Logs on failure
         if: failure()
-        run: docker compose -f docker-compose.yml -f demo/BR0001.compose.yaml logs
+        run: docker compose -f docker-compose.yml -f demo-branches/BR0001.compose.yaml logs
       - name: Stop
         if: always()
-        run: docker compose -f docker-compose.yml -f demo/BR0001.compose.yaml down -v
+        run: docker compose -f docker-compose.yml -f demo-branches/BR0001.compose.yaml down -v

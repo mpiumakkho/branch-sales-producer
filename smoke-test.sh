@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Checks a branch after `docker compose -f docker-compose.yml -f demo/<branch>.compose.yaml up -d`, from the `wan`
+# Checks a branch after `docker compose -f docker-compose.yml -f demo-branches/<branch>.compose.yaml up -d`, from the `wan`
 # network, the way HQ (or anyone on the internet) reaches the branch:
 #   1. HQ's user can log in over TLS through kafka.<branch>.example:9094, with the HQ CA and host name check
 #   2. HQ's user sees the two contract topics

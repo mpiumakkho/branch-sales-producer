@@ -12,7 +12,7 @@ The message formats are the contract in the HQ consumer repo ([branch-sales-cons
 | [`backoffice/`](backoffice/) | Simulated back-office tables, for tests and the demo |
 | [`contract/`](contract/) | Copies of the contract schemas, test only |
 | [`edge/`](edge/), [`mongo/`](mongo/) | Branch edge (HAProxy) and MongoDB user script for `docker-compose.yml` |
-| [`demo/`](demo/) | Two demo branches (configuration, simulated manager actions) for the end-to-end demo |
+| [`demo-branches/`](demo-branches/) | Two demo branches (configuration, simulated manager actions) for the end-to-end demo |
 
 ## Branch database
 
@@ -59,8 +59,8 @@ Collection `sync_state`, one document per `(saleDate, revision)`, id `2026-10-01
 Every status change is one update of one document, applied atomically by MongoDB, so no transaction or replica set is needed, and nothing is buffered: a producer that stops right after a broker ack has lost only the `SENT` write, and sends the revision again (HQ answers `DUPLICATE`). The document keeps `attempts` and the last 50 events (`history`): send attempts with their offset or error, and HQ receipts. Receipts are matched to the revision by the offset the message was sent at. There is no automatic clean-up yet (requirements Q9).
 
 ```bash
-demo/sync-state.sh BR0001             # a demo branch's send state
-demo/sync-state.sh BR0001 --history   # with every attempt and receipt
+demo-branches/sync-state.sh BR0001             # a demo branch's send state
+demo-branches/sync-state.sh BR0001 --history   # with every attempt and receipt
 ```
 
 ## Send rounds
@@ -106,10 +106,10 @@ branch-sales:
 
 ```bash
 cp .env.example .env    # set the passwords, BR0001_HQ_KAFKA_PASSWORD and BR0001_KAFKA_PEM from HQ
-docker compose -f docker-compose.yml -f demo/BR0001.compose.yaml up -d --build
+docker compose -f docker-compose.yml -f demo-branches/BR0001.compose.yaml up -d --build
 HQ_KAFKA_PASSWORD=... ./smoke-test.sh BR0001 ../branch-sales-consumer/infra/tls/out/ca.crt
-demo/sql.sh BR0001 demo/BR0001/01-enter-and-confirm.sql    # the manager enters and confirms a day
-demo/sync-state.sh BR0001                                  # its send state, then HQ's receipt
+demo-branches/sql.sh BR0001 demo-branches/BR0001/01-enter-and-confirm.sql    # the manager enters and confirms a day
+demo-branches/sync-state.sh BR0001                                  # its send state, then HQ's receipt
 ```
 
 | Service | Image | Purpose |
@@ -123,7 +123,7 @@ demo/sync-state.sh BR0001                                  # its send state, the
 
 `smoke-test.sh` runs from `wan`, as HQ connects: HQ's user can log in over TLS (host name checked against the HQ CA) and sees the two topics, cannot write the summary topic, a wrong password and a plaintext client are refused, and nothing but the edge's port 9094 is reachable from `wan` (not Kafka's other ports, MongoDB, the database or the producer).
 
-The full walkthrough with HQ and two branches, including the failure cases, is in the consumer repo: [demo/README.md](https://github.com/mpiumakkho/branch-sales-consumer/blob/main/demo/README.md).
+The full walkthrough with HQ and two branches, including the failure cases, is in the consumer repo: [demo-branches/README.md](https://github.com/mpiumakkho/branch-sales-consumer/blob/main/demo/README.md).
 
 ## Configuration
 
