@@ -125,7 +125,7 @@ demo-branches/sync-state.sh BR0001                                  # its send s
 
 `smoke-test.sh` runs from `wan`, as HQ connects: HQ's user can log in over TLS (host name checked against the HQ CA) and sees the two topics, cannot write the summary topic, a wrong password and a plaintext client are refused, and nothing but the edge's port 9094 is reachable from `wan` (not Kafka's other ports, MongoDB, the database or the producer).
 
-The full walkthrough with HQ and two branches, including the failure cases, is in the consumer repo: [demo-branches/README.md](https://github.com/mpiumakkho/branch-sales-consumer/blob/main/demo/README.md).
+The full walkthrough with HQ and two branches, including the failure cases, is in the consumer repo: [demo/README.md](https://github.com/mpiumakkho/branch-sales-consumer/blob/main/demo/README.md).
 
 ## Configuration
 
