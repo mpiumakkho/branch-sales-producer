@@ -6,7 +6,7 @@ import java.time.LocalDate;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Send state of one (saleDate, revision), one MongoDB document in {@code sync_state} (requirements §16.4).
+ * Send state of one (saleDate, revision), one MongoDB document in {@code sync_state} (requirements §6).
  *
  * @param sentAt when the last message for this revision was acknowledged by the branch broker, if ever
  */
