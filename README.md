@@ -56,7 +56,9 @@ Collection `sync_state`, one document per `(saleDate, revision)`, id `2026-10-01
 | `HQ_ACCEPTED` | HQ receipt `INSERTED`, `UPDATED`, `DUPLICATE` or `STALE`: HQ holds this revision or a higher one. Final | no |
 | `HQ_REJECTED` | HQ receipt `REJECTED`: `hqRejectReason`, `hqDetail`. HQ keeps the record and can replay it; a later `INSERTED` receipt for the same offset makes it `HQ_ACCEPTED` | no (fix the data and confirm again, or wait for HQ's replay) |
 
-Every status change is one update of one document, applied atomically by MongoDB, so no transaction or replica set is needed, and nothing is buffered: a producer that stops right after a broker ack has lost only the `SENT` write, and sends the revision again (HQ answers `DUPLICATE`). The document keeps `attempts` and the last 50 events (`history`): send attempts with their offset or error, and HQ receipts. Receipts are matched to the revision by the offset the message was sent at. There is no automatic clean-up yet (requirements Q9).
+Every status change is one update of one document, applied atomically by MongoDB, so no transaction or replica set is needed, and nothing is buffered: a producer that stops right after a broker ack has lost only the `SENT` write, and sends the revision again (HQ answers `DUPLICATE`). The document keeps `attempts` and the last 50 events (`history`): send attempts with their offset or error, and HQ receipts. Receipts are matched to the revision by the offset the message was sent at.
+
+Once a day (`CLEANUP_CRON`, 03:30 Asia/Bangkok) documents of days HQ accepted whose last change is older than `SEND_STATE_RETENTION` (90 days) are deleted. Days still waiting (`SENT`, `FAILED`) or rejected by HQ are kept whatever their age, so nothing pending disappears from view. The retention must be longer than the lookback, otherwise an accepted day still within the lookback would be sent again.
 
 ```bash
 demo-branches/sync-state.sh BR0001             # a demo branch's send state
@@ -139,6 +141,8 @@ The full walkthrough with HQ and two branches, including the failure cases, is i
 | `SEND_MAX_JITTER` | `30m` | upper bound of the random delay before each round |
 | `SEND_LOOKBACK` | `60d` | confirmed days older than this are not read |
 | `SEND_RESEND_AFTER` | `24h` | a `SENT` day without an HQ receipt after this long is sent again |
+| `SEND_STATE_RETENTION` | `90d` | send state of accepted days is deleted this long after its last change; must exceed `SEND_LOOKBACK` |
+| `CLEANUP_CRON` | `0 30 3 * * *` | when the clean-up runs (Spring cron, Asia/Bangkok); `-` disables it |
 | `SPRING_CONFIG_ADDITIONAL_LOCATION` | none | extra configuration file, e.g. the branch's category mapping (`file:/config/branch.yaml` in Docker) |
 
 Kafka producer: `acks=all`, idempotence on, a send fails after about 30 s if the branch broker is not reachable. The topics and HQ's consumer group are fixed by the contract.
@@ -155,5 +159,6 @@ Needs JDK 25 and Docker. Tests start their own Kafka, MongoDB and branch databas
 |---|---|
 | `SummaryMessageWriterTest` | messages are valid against the contract schema; money format, Bangkok time with seconds, category mapping and merging, data rejected before sending |
 | `PostgresSendRoundTest`, `MySqlSendRoundTest`, `SqlServerSendRoundTest` | the same tests ([AbstractSendRoundTest](src/test/java/io/github/mpiumakkho/branchsales/producer/service/AbstractSendRoundTest.java)) on each database: only confirmed revisions are sent, once; `SENT` waits for HQ and becomes `HQ_ACCEPTED` or `HQ_REJECTED` from the receipt; a rejected day is not sent again until re-confirmed, and a later `INSERTED` receipt (HQ replay) accepts it; a `SENT` day without a receipt is sent again after `resend-after`, and either copy's receipt completes it; a receipt that arrives before `SENT` is applied once the offset is known; days outside the lookback are not read; a bad day does not block other days; reading is not blocked by an open back-office transaction; Kafka failure (simulated and with the broker paused) stops the round and the next round sends everything in date order, with the history showing both attempts |
-| `ProducerPropertiesTest` | branch code, category mapping and durations are checked at startup |
+| `ProducerPropertiesTest` | branch code, category mapping and durations are checked at startup, including retention longer than lookback |
+| `SyncStateCleanupTest` | only accepted days older than the retention are deleted; waiting and rejected days stay |
 | `SendSchedulerTest` | random delay stays between 0 and the maximum |
