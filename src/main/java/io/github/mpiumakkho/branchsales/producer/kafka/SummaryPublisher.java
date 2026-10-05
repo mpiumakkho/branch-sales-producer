@@ -14,7 +14,7 @@ import io.github.mpiumakkho.branchsales.producer.config.ProducerProperties;
 import io.github.mpiumakkho.branchsales.producer.service.SummaryMessageWriter.Message;
 
 /**
- * Sends one message and waits for the broker ack ({@code acks=all}).
+ * Sends one message to the branch's own Kafka broker and waits for the ack ({@code acks=all}).
  */
 @Component
 public class SummaryPublisher {
@@ -31,11 +31,14 @@ public class SummaryPublisher {
 
 	/**
 	 * Returns only after the broker acknowledged the message.
+	 * @return the message's offset in the summary topic; HQ's receipt refers to it
 	 * @throws PublishException if the message was not acknowledged; it may still have been written (at-least-once)
 	 */
-	public void publish(Message message) {
+	public long publish(Message message) {
 		try {
-			template.send(topic, message.key(), message.value()).get(sendTimeout.toMillis(), TimeUnit.MILLISECONDS);
+			return template.send(topic, message.key(), message.value())
+					.get(sendTimeout.toMillis(), TimeUnit.MILLISECONDS)
+					.getRecordMetadata().offset();
 		}
 		catch (ExecutionException e) {
 			throw new PublishException(e.getCause());

@@ -10,7 +10,7 @@ import org.testcontainers.utility.DockerImageName;
 
 /**
  * One branch database per supported back-office database, each started with its simulated back-office tables
- * (backoffice/&lt;vendor&gt;/schema.sql). The producer's own tables come from its Flyway migrations, as in a branch.
+ * (backoffice/&lt;vendor&gt;/schema.sql). The producer only reads it; its own state is in MongoDB.
  */
 public final class BranchDatabases {
 

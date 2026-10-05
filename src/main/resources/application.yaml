@@ -3,21 +3,17 @@ spring:
     name: branch-sales-producer
 
   datasource:
-    # Branch back-office database
+    # Branch back-office database. Read only: the producer needs SELECT on daily_sales and daily_sales_line
     url: ${BRANCH_DB_URL:jdbc:postgresql://localhost:5434/branch}
     username: ${BRANCH_DB_USER:branch_app}
     password: ${BRANCH_DB_PASSWORD}
 
-  flyway:
-    # Only sync_log is migrated. A separate history table, in case the back-office system uses Flyway itself.
-    table: branch_sales_flyway_history
-    locations: classpath:db/migration/{vendor}
-    # The branch database is never empty (back-office tables). Baseline at 0 so that V1 (sync_log) still runs.
-    baseline-on-migrate: true
-    baseline-version: 0
+  mongodb:
+    # Send state (collection sync_state) in the branch's MongoDB
+    uri: ${MONGODB_URI:mongodb://localhost:27017/branch_sales}
 
   kafka:
-    # HQ Kafka external listener (infra network branch-sales-wan, profile "sasl"); localhost:9092 when run from an IDE
+    # The branch's own Kafka broker (LOCAL listener on the branch network); HQ reads from it
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
@@ -25,21 +21,33 @@ spring:
       acks: all
       properties:
         enable.idempotence: true
-        # Fail a send within ~30 s when HQ is not reachable, instead of the 120 s / 60 s client defaults
+        # Fail a send within ~30 s when the broker is not reachable, instead of the 120 s / 60 s client defaults
         delivery.timeout.ms: 30000
         request.timeout.ms: 10000
         max.block.ms: 10000
+    consumer:
+      # HQ receipts
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
 
 branch-sales:
   # This branch's code in the HQ branch registry. Required; the producer does not start without it.
   branch-code: ${BRANCH_CODE:}
-  # One topic per branch; the branch's SCRAM user may write only this one (HQ onboard-branch.sh)
-  topic: branch-sales.daily-summary.${branch-sales.branch-code}
+  # Both topics are in the branch's own Kafka (contract/README.md in the consumer repo)
+  topic: branch-sales.daily-summary
+  receipt-topic: branch-sales.receipt
+  receipt-group: branch-sales-producer
   send-timeout: 40s
+  # Confirmed days older than this are not read any more
+  lookback: ${SEND_LOOKBACK:60d}
+  # A day sent without an HQ receipt after this long is sent again
+  resend-after: ${SEND_RESEND_AFTER:24h}
   schedule:
     # Q4: a round every hour (Asia/Bangkok), starting after a random delay of up to 30 minutes
     cron: ${SEND_CRON:0 0 * * * *}
     max-jitter: ${SEND_MAX_JITTER:30m}
   # Back-office category code -> HQ category code (contract/categories.md in the consumer repo).
-  # Set per branch; a day with an unmapped code is not sent and is logged as FAILED in sync_log.
+  # Set per branch; a day with an unmapped code is not sent and is recorded as FAILED.
   category-mapping: {}

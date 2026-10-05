@@ -21,30 +21,19 @@
 	</properties>
 
 	<dependencies>
-		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-flyway</artifactId>
-		</dependency>
+		<!-- Reads the back-office database only; the producer's own state is in MongoDB -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-jdbc</artifactId>
 		</dependency>
+		<!-- Send state per (saleDate, revision), in the branch's MongoDB (requirements §16.4) -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-data-mongodb</artifactId>
+		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-kafka</artifactId>
-		</dependency>
-		<!-- Branch databases: one producer build, the database is chosen by BRANCH_DB_URL -->
-		<dependency>
-			<groupId>org.flywaydb</groupId>
-			<artifactId>flyway-database-postgresql</artifactId>
-		</dependency>
-		<dependency>
-			<groupId>org.flywaydb</groupId>
-			<artifactId>flyway-mysql</artifactId>
-		</dependency>
-		<dependency>
-			<groupId>org.flywaydb</groupId>
-			<artifactId>flyway-sqlserver</artifactId>
 		</dependency>
 		<!-- Writes the message JSON. Version from the Spring Boot BOM. -->
 		<dependency>
@@ -52,6 +41,7 @@
 			<artifactId>jackson-databind</artifactId>
 		</dependency>
 
+		<!-- Branch databases: one producer build, the database is chosen by BRANCH_DB_URL -->
 		<dependency>
 			<groupId>org.postgresql</groupId>
 			<artifactId>postgresql</artifactId>
@@ -69,7 +59,7 @@
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-flyway-test</artifactId>
+			<artifactId>spring-boot-starter-data-mongodb-test</artifactId>
 			<scope>test</scope>
 		</dependency>
 		<dependency>
@@ -113,6 +103,11 @@
 			<scope>test</scope>
 		</dependency>
 		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers-mongodb</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
 			<groupId>com.networknt</groupId>
 			<artifactId>json-schema-validator</artifactId>
 			<version>${json-schema-validator.version}</version>
@@ -125,7 +120,7 @@
 			<testResource>
 				<directory>src/test/resources</directory>
 			</testResource>
-			<!-- Copy of the contract schema (see contract/README.md) and the simulated back-office schema -->
+			<!-- Copy of the contract schemas (see contract/README.md) and the simulated back-office schema -->
 			<testResource>
 				<directory>contract</directory>
 				<targetPath>contract</targetPath>

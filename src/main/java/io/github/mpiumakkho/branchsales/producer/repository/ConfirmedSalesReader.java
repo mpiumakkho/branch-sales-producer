@@ -24,8 +24,9 @@ import org.springframework.transaction.support.TransactionTemplate;
 import io.github.mpiumakkho.branchsales.producer.dto.ConfirmedSales;
 
 /**
- * Reads confirmed days whose current revision has not been sent yet (rule R1).
- * Read-only: the back-office tables belong to the back-office system.
+ * Reads confirmed days (rule R1) with their lines, from a given date on. Which of them still need sending is decided
+ * by their send state in MongoDB ({@code SendRound}).
+ * Read-only: the back-office tables belong to the back-office system, and the producer writes nothing there.
  * <p>
  * SQL is kept to what PostgreSQL, MySQL and SQL Server all accept.
  * <p>
@@ -38,26 +39,22 @@ import io.github.mpiumakkho.branchsales.producer.dto.ConfirmedSales;
  * </ul>
  */
 @Component
-public class PendingSalesReader {
+public class ConfirmedSalesReader {
 
-	private static final String PENDING_DAYS = """
-			select d.sale_date, d.branch_code, d.revision, d.confirmed_at
-			  from daily_sales d
-			  left join sync_log s
-			    on s.sale_date = d.sale_date and s.revision = d.revision and s.status = 'SENT'
-			 where d.status = 'CONFIRMED'
-			   and s.sale_date is null
-			 order by d.sale_date
+	private static final String CONFIRMED_DAYS = """
+			select sale_date, branch_code, revision, confirmed_at
+			  from daily_sales
+			 where status = 'CONFIRMED'
+			   and sale_date >= :since
+			 order by sale_date
 			""";
 
-	private static final String LINES_OF_PENDING_DAYS = """
+	private static final String LINES_OF_CONFIRMED_DAYS = """
 			select l.sale_date, l.category_code, l.amount, l.quantity
 			  from daily_sales_line l
 			  join daily_sales d on d.sale_date = l.sale_date
-			  left join sync_log s
-			    on s.sale_date = d.sale_date and s.revision = d.revision and s.status = 'SENT'
 			 where d.status = 'CONFIRMED'
-			   and s.sale_date is null
+			   and d.sale_date >= :since
 			 order by l.sale_date, l.category_code
 			""";
 
@@ -69,7 +66,7 @@ public class PendingSalesReader {
 	private final TransactionTemplate snapshot;
 	private final boolean sqlServer;
 
-	public PendingSalesReader(JdbcClient jdbc, DataSource dataSource, PlatformTransactionManager transactionManager) {
+	public ConfirmedSalesReader(JdbcClient jdbc, DataSource dataSource, PlatformTransactionManager transactionManager) {
 		this.jdbc = jdbc;
 		this.dataSource = dataSource;
 		this.sqlServer = "Microsoft SQL Server".equals(databaseProductName(dataSource));
@@ -80,8 +77,8 @@ public class PendingSalesReader {
 		}
 	}
 
-	/** Oldest day first, so HQ receives days in order. */
-	public List<ConfirmedSales> readPending() {
+	/** Confirmed days from {@code since} on, oldest first, so HQ receives days in order. */
+	public List<ConfirmedSales> readConfirmed(LocalDate since) {
 		return snapshot.execute(status -> {
 			if (sqlServer) {
 				// Spring accepts only the standard levels, so set SNAPSHOT on the transaction's connection before its
@@ -89,12 +86,13 @@ public class PendingSalesReader {
 				useSqlServerSnapshot();
 			}
 			Map<LocalDate, List<ConfirmedSales.Line>> linesByDay = new HashMap<>();
-			jdbc.sql(LINES_OF_PENDING_DAYS).query(rs -> {
+			jdbc.sql(LINES_OF_CONFIRMED_DAYS).param("since", since).query(rs -> {
 				linesByDay.computeIfAbsent(rs.getObject("sale_date", LocalDate.class), d -> new ArrayList<>())
 						.add(new ConfirmedSales.Line(rs.getString("category_code"), rs.getBigDecimal("amount"),
 								rs.getLong("quantity")));
 			});
-			return jdbc.sql(PENDING_DAYS)
+			return jdbc.sql(CONFIRMED_DAYS)
+					.param("since", since)
 					.query((rs, n) -> {
 						LocalDate saleDate = rs.getObject("sale_date", LocalDate.class);
 						return new ConfirmedSales(

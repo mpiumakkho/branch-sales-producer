@@ -6,16 +6,16 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Bean;
 import org.testcontainers.kafka.KafkaContainer;
+import org.testcontainers.mongodb.MongoDBContainer;
 import org.testcontainers.utility.DockerImageName;
 
 /**
- * Kafka with the same image as the HQ infra, and the branch topic. Combine with one branch database:
- * {@link BranchDatabases.Postgres}, {@link BranchDatabases.MySql} or {@link BranchDatabases.SqlServer}.
+ * The branch's own Kafka broker with its two topics, and the branch's MongoDB, with the same images as the branch
+ * compose file. Combine with one branch database: {@link BranchDatabases.Postgres}, {@link BranchDatabases.MySql} or
+ * {@link BranchDatabases.SqlServer}.
  */
 @TestConfiguration(proxyBeanMethods = false)
 public class TestcontainersConfiguration {
-
-	public static final int PARTITIONS = 2;
 
 	@Bean
 	@ServiceConnection
@@ -23,9 +23,20 @@ public class TestcontainersConfiguration {
 		return new KafkaContainer(DockerImageName.parse("apache/kafka:4.3.1"));
 	}
 
-	// In the HQ infra the topic is created by onboard-branch.sh; auto topic creation is off there
+	@Bean
+	@ServiceConnection
+	MongoDBContainer mongoDbContainer() {
+		return new MongoDBContainer(DockerImageName.parse("mongo:8.0.16"));
+	}
+
+	// In a branch the topics are created by kafka-init in docker-compose.yml: one partition each
 	@Bean
 	NewTopic summaryTopic(@Value("${branch-sales.topic}") String name) {
-		return new NewTopic(name, PARTITIONS, (short) 1);
+		return new NewTopic(name, 1, (short) 1);
+	}
+
+	@Bean
+	NewTopic receiptTopic(@Value("${branch-sales.receipt-topic}") String name) {
+		return new NewTopic(name, 1, (short) 1);
 	}
 }
