@@ -1,13 +1,15 @@
-# One branch: a simulated back-office database and the producer.
-# Each branch is started with its own override file in demo/, which sets the project name, the database port,
-# and the branch configuration (category mapping):
+# One branch: simulated back-office database, the branch's own Kafka broker and MongoDB, the edge that HQ connects
+# through, and the producer (requirements §16). Always started with the branch's override file in demo/, which sets
+# the project name, the branch's host name (kafka.<branch>.example), its broker certificate, HQ's password and the
+# branch configuration:
 #
 #   docker compose -f docker-compose.yml -f demo/BR0001.compose.yaml up -d --build
 #
 # Networks
-#   branch            - per branch (one per compose project): producer + branch DB
-#   branch-sales-wan  - created by the HQ infra; stands in for the internet. The producer reaches Kafka only
-#                       through kafka.hq.example:9094 and cannot reach the HQ DB.
+#   branch            - per branch (one per compose project): everything except the edge's outside
+#   branch-sales-wan  - created by the HQ infra; stands in for the internet. The branch's only container on it is the
+#                       edge, which forwards TCP 9094 to the broker's EXTERNAL listener (TLS + SCRAM, for HQ only).
+#                       HQ cannot reach the producer, MongoDB, the database or the broker's PLAINTEXT listener.
 
 services:
   branch-db:
@@ -17,9 +19,12 @@ services:
       POSTGRES_DB: branch
       POSTGRES_USER: branch_app
       POSTGRES_PASSWORD: ${BRANCH_DB_PASSWORD:?set BRANCH_DB_PASSWORD in .env}
+      # Read-only login for the producer (backoffice/postgresql/reader-user.sh)
+      BRANCH_READER_PASSWORD: ${BRANCH_READER_PASSWORD:?set BRANCH_READER_PASSWORD in .env}
     volumes:
-      # Simulated back-office tables, created on first start
+      # Simulated back-office tables and the producer's read-only user, created on first start
       - ./backoffice/postgresql/schema.sql:/docker-entrypoint-initdb.d/01-backoffice-schema.sql:ro
+      - ./backoffice/postgresql/reader-user.sh:/docker-entrypoint-initdb.d/02-reader-user.sh:ro
       - branch-db-data:/var/lib/postgresql
     networks:
       - branch
@@ -29,6 +34,116 @@ services:
       timeout: 5s
       retries: 10
 
+  mongodb:
+    image: mongo:8.0.16
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?set MONGO_ROOT_PASSWORD in .env}
+      # Producer login with readWrite on branch_sales only (mongo/create-user.js)
+      MONGO_PASSWORD: ${MONGO_PASSWORD:?set MONGO_PASSWORD in .env}
+    volumes:
+      - ./mongo/create-user.js:/docker-entrypoint-initdb.d/create-user.js:ro
+      - mongodb-data:/data/db
+    networks:
+      - branch
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  kafka:
+    image: apache/kafka:4.3.1
+    restart: unless-stopped
+    environment:
+      # CLUSTER_ID and KAFKA_ADVERTISED_LISTENERS (EXTERNAL host kafka.<branch>.example) come from the branch override
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # LOCAL: producer and kafka-init on the branch network   EXTERNAL: HQ through the edge
+      KAFKA_LISTENERS: LOCAL://:19092,EXTERNAL://:9094,CONTROLLER://:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: LOCAL:PLAINTEXT,EXTERNAL:SASL_SSL,CONTROLLER:PLAINTEXT
+      KAFKA_LISTENER_NAME_EXTERNAL_SSL_KEYSTORE_TYPE: PEM
+      KAFKA_LISTENER_NAME_EXTERNAL_SSL_KEYSTORE_LOCATION: /etc/kafka/tls/kafka.pem
+      KAFKA_LISTENER_NAME_EXTERNAL_SASL_ENABLED_MECHANISMS: SCRAM-SHA-512
+      # Env names: "." -> "_", "_" -> "__", "-" -> "___"  (listener.name.external.scram-sha-512.sasl.jaas.config)
+      KAFKA_LISTENER_NAME_EXTERNAL_SCRAM___SHA___512_SASL_JAAS_CONFIG: org.apache.kafka.common.security.scram.ScramLoginModule required;
+      # ACLs: HQ's user may read summaries and write receipts only (kafka-init). Clients on LOCAL have no identity
+      # (User:ANONYMOUS) and are trusted as branch-internal.
+      KAFKA_AUTHORIZER_CLASS_NAME: org.apache.kafka.metadata.authorizer.StandardAuthorizer
+      KAFKA_SUPER_USERS: User:ANONYMOUS
+      KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
+      # HQ sessions log in again every 10 minutes, so a removed user or new password takes effect without a restart
+      KAFKA_LISTENER_NAME_EXTERNAL_CONNECTIONS_MAX_REAUTH_MS: 600000
+      KAFKA_INTER_BROKER_LISTENER_NAME: LOCAL
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      # Single node: internal topics cannot have more than one replica
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # Topics are created only by kafka-init
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+      # The branch override mounts the broker key + certificate from HQ at /etc/kafka/tls/kafka.pem
+    networks:
+      - branch
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  # Creates the two contract topics, HQ's SCRAM user and its ACLs, then exits. Safe to run again (new password).
+  kafka-init:
+    image: apache/kafka:4.3.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+    # HQ_KAFKA_PASSWORD comes from the branch override: the value HQ used in onboard-branch.sh
+    networks:
+      - branch
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -euo pipefail
+        [[ $$HQ_KAFKA_PASSWORD =~ ^[A-Za-z0-9._~-]{8,128}$$ ]] || { echo "HQ_KAFKA_PASSWORD: 8-128 characters from A-Z a-z 0-9 . _ ~ -"; exit 1; }
+        B="--bootstrap-server kafka:19092"
+        K=/opt/kafka/bin
+        # One partition each (order of revisions); 30 days, since HQ may not read for days
+        for t in branch-sales.daily-summary branch-sales.receipt; do
+          $$K/kafka-topics.sh $$B --create --if-not-exists --topic $$t --partitions 1 --replication-factor 1 \
+            --config retention.ms=2592000000
+        done
+        $$K/kafka-configs.sh $$B --alter --entity-type users --entity-name hq \
+          --add-config "SCRAM-SHA-512=[iterations=8192,password=$$HQ_KAFKA_PASSWORD]" > /dev/null
+        $$K/kafka-acls.sh $$B --add --allow-principal User:hq --operation Read --operation Describe \
+          --topic branch-sales.daily-summary > /dev/null
+        $$K/kafka-acls.sh $$B --add --allow-principal User:hq --operation Write --operation Describe \
+          --topic branch-sales.receipt > /dev/null
+        $$K/kafka-acls.sh $$B --add --allow-principal User:hq --operation Read --group hq-branch-sales-consumer > /dev/null
+        $$K/kafka-acls.sh $$B --list --principal User:hq
+
+  # Stands in for the branch firewall: the only branch container on wan, forwarding TCP 9094 to the broker's EXTERNAL
+  # listener. TLS passes through unchanged (config: edge/haproxy.cfg). The wan alias kafka.<branch>.example is set by
+  # the branch's override file.
+  edge:
+    image: haproxy:3.2.25-alpine
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./edge/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks:
+      - branch
+      - wan
+
   producer:
     build: .
     image: branch-sales-producer:local
@@ -36,23 +151,25 @@ services:
     depends_on:
       branch-db:
         condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     environment:
       BRANCH_DB_URL: jdbc:postgresql://branch-db:5432/branch
-      BRANCH_DB_PASSWORD: ${BRANCH_DB_PASSWORD:?set BRANCH_DB_PASSWORD in .env}
-      KAFKA_BOOTSTRAP_SERVERS: kafka.hq.example:9094
-      # TLS + SCRAM to the HQ external listener; the password is set per branch in the override file
-      SPRING_PROFILES_ACTIVE: sasl
+      BRANCH_DB_USER: branch_sales_reader
+      BRANCH_DB_PASSWORD: ${BRANCH_READER_PASSWORD:?set BRANCH_READER_PASSWORD in .env}
+      MONGODB_URI: mongodb://branch_sales:${MONGO_PASSWORD:?set MONGO_PASSWORD in .env}@mongodb:27017/branch_sales
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
       # Branch configuration file, mounted by the override file
       SPRING_CONFIG_ADDITIONAL_LOCATION: file:/config/branch.yaml
-    volumes:
-      # CA certificate that signed the HQ broker certificate
-      - ${HQ_CA_CERT:?set HQ_CA_CERT in .env}:/certs/ca.crt:ro
     networks:
       - branch
-      - wan
 
 volumes:
   branch-db-data:
+  mongodb-data:
+  kafka-data:
 
 networks:
   branch: {}

@@ -4,7 +4,25 @@ name: branch-br0001
 services:
   branch-db:
     ports:
-      - "5434:5432"
+      # This machine only: demo/sql.sh stands in for the back-office system
+      - "127.0.0.1:5434:5432"
+  kafka:
+    environment:
+      # Kafka cluster id of this branch's broker (any 16 bytes, base64url)
+      CLUSTER_ID: MXhRzxCDS7Wtw-xHCftycA
+      KAFKA_ADVERTISED_LISTENERS: LOCAL://kafka:19092,EXTERNAL://kafka.br0001.example:9094
+    volumes:
+      # Broker key + certificate for kafka.br0001.example, from HQ (onboard-branch.sh)
+      - ${BR0001_KAFKA_PEM:?set BR0001_KAFKA_PEM in .env}:/etc/kafka/tls/kafka.pem:ro
+  kafka-init:
+    environment:
+      # HQ's password at this broker, the same value HQ used in onboard-branch.sh
+      HQ_KAFKA_PASSWORD: ${BR0001_HQ_KAFKA_PASSWORD:?set BR0001_HQ_KAFKA_PASSWORD in .env}
+  edge:
+    networks:
+      wan:
+        aliases:
+          - kafka.br0001.example
   producer:
     volumes:
       - ./demo/BR0001/branch.yaml:/config/branch.yaml:ro
@@ -12,5 +30,5 @@ services:
       # Demo only: a round every minute with up to 15 s delay, instead of every hour with up to 30 min
       SEND_CRON: "0 * * * * *"
       SEND_MAX_JITTER: 15s
-      # SCRAM password of user BR0001, the same value HQ used in onboard-branch.sh
-      KAFKA_PASSWORD: ${BR0001_KAFKA_PASSWORD:?set BR0001_KAFKA_PASSWORD in .env}
+      # The demo days are fixed dates (2026-10-01 ...); read them however long ago that is
+      SEND_LOOKBACK: 3650d

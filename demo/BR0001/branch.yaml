@@ -6,3 +6,6 @@ branch-sales:
     SNK: SNACK
     RTE: READY_MEAL
     HH: HOUSEHOLD
+    # Gift cards: HQ has no GIFT_CARD category yet, so HQ rejects days that have it (UNKNOWN_CATEGORY) until HQ adds
+    # the category and replays them (see demo/README.md in the consumer repo)
+    GC: GIFT_CARD

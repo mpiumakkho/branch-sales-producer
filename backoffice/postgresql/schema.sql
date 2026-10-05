@@ -1,6 +1,6 @@
 -- Simulated tables of the branch back-office system (PostgreSQL variant).
 -- In a real branch these tables already exist and belong to the back-office system.
--- The producer only reads them; it never writes to them. Its own table (sync_log) comes from its Flyway migrations.
+-- The producer only reads them; it never writes to the branch database. Its send state is in the branch MongoDB.
 
 -- One row per business day. The manager enters lines (DRAFT), then confirms (CONFIRMED, revision + 1).
 -- Editing after confirmation sets the status back to DRAFT; confirming again increases the revision.
