@@ -30,5 +30,7 @@ services:
       # Demo only: a round every minute with up to 15 s delay, instead of every hour with up to 30 min
       SEND_CRON: "0 * * * * *"
       SEND_MAX_JITTER: 15s
-      # The demo days are fixed dates (2026-10-01 ...); read them however long ago that is
+      # The demo days are fixed dates (2026-10-01 ...); read them however long ago that is. The retention must be
+      # longer than the lookback (the producer refuses to start otherwise)
       SEND_LOOKBACK: 3650d
+      SEND_STATE_RETENTION: 3700d
