@@ -31,8 +31,8 @@ class SummaryMessageWriterTest {
 
 	private final SummaryMessageWriter writer = new SummaryMessageWriter(
 			new ProducerProperties("BR0001", "branch-sales.daily-summary", "branch-sales.receipt", MAPPING,
-					new ProducerProperties.Schedule("-", Duration.ZERO), Duration.ofSeconds(1), Duration.ofDays(60),
-					Duration.ofHours(24)));
+					new ProducerProperties.Schedule("-", Duration.ZERO, "-"), Duration.ofSeconds(1), Duration.ofDays(60),
+					Duration.ofHours(24), Duration.ofDays(90)));
 
 	private final JsonMapper mapper = JsonMapper.builder().build();
 

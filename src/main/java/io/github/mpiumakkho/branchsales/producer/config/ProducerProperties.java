@@ -21,6 +21,9 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param sendTimeout     how long to wait for the broker ack of one message
  * @param lookback        how far back confirmed days are read; older days are not sent again
  * @param resendAfter     a day that was sent but has no HQ receipt after this long is sent again
+ * @param retention       send state of days HQ accepted is deleted this long after its last change (Q9). Must be
+ *                        longer than {@code lookback}, otherwise an accepted day still in the lookback would be sent
+ *                        again
  */
 @ConfigurationProperties("branch-sales")
 public record ProducerProperties(
@@ -31,7 +34,8 @@ public record ProducerProperties(
 		Schedule schedule,
 		@DefaultValue("60s") Duration sendTimeout,
 		@DefaultValue("60d") Duration lookback,
-		@DefaultValue("24h") Duration resendAfter) {
+		@DefaultValue("24h") Duration resendAfter,
+		@DefaultValue("90d") Duration retention) {
 
 	// Patterns from the contract schema (contract/daily-sales-summary.v1.schema.json)
 	static final Pattern BRANCH_CODE = Pattern.compile("^[A-Z0-9]{3,10}$");
@@ -55,13 +59,18 @@ public record ProducerProperties(
 		if (lookback.isNegative() || lookback.isZero() || resendAfter.isNegative() || resendAfter.isZero()) {
 			throw new IllegalArgumentException("branch-sales.lookback and branch-sales.resend-after must be positive");
 		}
+		if (retention.compareTo(lookback) <= 0) {
+			throw new IllegalArgumentException("branch-sales.retention (" + retention
+					+ ") must be longer than branch-sales.lookback (" + lookback + ")");
+		}
 	}
 
 	/**
-	 * @param cron      round start times, Asia/Bangkok
-	 * @param maxJitter each round waits a random time between 0 and this before reading the database, so branches
-	 *                  do not all send at the same moment
+	 * @param cron        round start times, Asia/Bangkok
+	 * @param maxJitter   each round waits a random time between 0 and this before reading the database, so branches
+	 *                    do not all send at the same moment
+	 * @param cleanupCron when accepted send state older than {@code retention} is deleted, Asia/Bangkok
 	 */
-	public record Schedule(String cron, Duration maxJitter) {
+	public record Schedule(String cron, Duration maxJitter, @DefaultValue("0 30 3 * * *") String cleanupCron) {
 	}
 }

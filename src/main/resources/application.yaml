@@ -44,10 +44,14 @@ branch-sales:
   lookback: ${SEND_LOOKBACK:60d}
   # A day sent without an HQ receipt after this long is sent again
   resend-after: ${SEND_RESEND_AFTER:24h}
+  # Q9: send state of days HQ accepted is deleted this long after its last change (must exceed lookback)
+  retention: ${SEND_STATE_RETENTION:90d}
   schedule:
     # Q4: a round every hour (Asia/Bangkok), starting after a random delay of up to 30 minutes
     cron: ${SEND_CRON:0 0 * * * *}
     max-jitter: ${SEND_MAX_JITTER:30m}
+    # Daily clean-up of accepted send state older than retention (Asia/Bangkok); "-" disables it
+    cleanup-cron: ${CLEANUP_CRON:0 30 3 * * *}
   # Back-office category code -> HQ category code (contract/categories.md in the consumer repo).
   # Set per branch; a day with an unmapped code is not sent and is recorded as FAILED.
   category-mapping: {}

@@ -55,6 +55,8 @@ public class SyncStateStore {
 		// Receipts are matched by the offsets the revision was sent at
 		mongo.indexOps(COLLECTION).createIndex(new Index("sentOffsets", Sort.Direction.ASC));
 		mongo.indexOps(COLLECTION).createIndex(new Index("status", Sort.Direction.ASC));
+		// Clean-up of accepted days by their last change
+		mongo.indexOps(COLLECTION).createIndex(new Index("updatedAt", Sort.Direction.ASC));
 	}
 
 	/** @return states by {@link SyncState#id}; days never sent have no entry */
@@ -105,6 +107,16 @@ public class SyncStateStore {
 				.inc("attempts", 1);
 		update.push("history").slice(-HISTORY_SIZE).each(event);
 		writeUnlessFinal(saleDate, revision, update, event, null);
+	}
+
+	/**
+	 * Deletes the state of days HQ accepted whose last change is before {@code cutoff} (Q9). Days still waiting
+	 * (SENT, FAILED) or rejected by HQ are kept, whatever their age, so they stay visible.
+	 * @return number of documents deleted
+	 */
+	public long deleteAcceptedBefore(Instant cutoff) {
+		return mongo.remove(query(where("status").is(Status.HQ_ACCEPTED.name()).and("updatedAt").lt(Date.from(cutoff))),
+				COLLECTION).getDeletedCount();
 	}
 
 	/**
