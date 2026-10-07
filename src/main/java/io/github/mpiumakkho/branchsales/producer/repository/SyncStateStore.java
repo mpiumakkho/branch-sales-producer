@@ -59,6 +59,16 @@ public class SyncStateStore {
 		mongo.indexOps(COLLECTION).createIndex(new Index("updatedAt", Sort.Direction.ASC));
 	}
 
+	/** Documents in the given status (metrics). */
+	public long count(Status status) {
+		return mongo.count(query(where("status").is(status.name())), COLLECTION);
+	}
+
+	/** SENT documents whose last send is older than the cutoff: no HQ receipt within resend-after (metrics). */
+	public long countSentBefore(Instant cutoff) {
+		return mongo.count(query(where("status").is(Status.SENT.name()).and("sentAt").lt(Date.from(cutoff))), COLLECTION);
+	}
+
 	/** @return states by {@link SyncState#id}; days never sent have no entry */
 	public Map<String, SyncState> find(Collection<String> ids) {
 		Map<String, SyncState> states = new HashMap<>();

@@ -102,6 +102,17 @@ branch-sales:
     SNK: SNACK
 ```
 
+## Monitoring
+
+Health and Prometheus metrics on the HTTP port (`PRODUCER_HTTP_PORT`, 8080). No authentication: the port is on the branch network only, never through the edge (the demo overrides publish it on this machine as 8091 / 8092).
+
+| Endpoint | Content |
+|---|---|
+| `/actuator/health` | `UP` or `DOWN` with components `kafka` (the branch broker answers, cluster id and node count), `mongo` (`sync_state`) and `db` (the back-office database) |
+| `/actuator/prometheus` | `branch_sales_sync_state{status}` days by send state; `branch_sales_sync_state_overdue` days `SENT` without an HQ receipt for longer than `SEND_RESEND_AFTER` (HQ is not reading this branch); `branch_sales_days_sent_total`, `branch_sales_days_failed_total`; `branch_sales_send_round_last` when the last round finished (epoch seconds); plus the Kafka client, MongoDB, JDBC pool and JVM metrics from Spring Boot |
+
+Alerts worth having: `branch_sales_sync_state_overdue > 0`, `branch_sales_sync_state{status="FAILED"} > 0` after two rounds, `branch_sales_sync_state{status="HQ_REJECTED"} > 0`, and `time() - branch_sales_send_round_last` above two round intervals.
+
 ## Run with Docker
 
 [`docker-compose.yml`](docker-compose.yml) runs one branch: the back-office PostgreSQL with the simulated tables, MongoDB, the branch's Kafka broker, `kafka-init`, the edge and the producer. HQ must have onboarded the branch first (`infra/onboard-branch.sh` in the consumer repo), which produces the broker certificate for `kafka.<branch>.example` and HQ's password; both go into the branch's `.env`. Each branch is started with its own override file, which sets the project name, the branch host name, the certificate, the password and the branch configuration:
@@ -143,6 +154,7 @@ The full walkthrough with HQ and two branches, including the failure cases, is i
 | `SEND_RESEND_AFTER` | `24h` | a `SENT` day without an HQ receipt after this long is sent again |
 | `SEND_STATE_RETENTION` | `90d` | send state of accepted days is deleted this long after its last change; must exceed `SEND_LOOKBACK` |
 | `CLEANUP_CRON` | `0 30 3 * * *` | when the clean-up runs (Spring cron, Asia/Bangkok); `-` disables it |
+| `PRODUCER_HTTP_PORT` | `8080` | health and metrics (see Monitoring) |
 | `SPRING_CONFIG_ADDITIONAL_LOCATION` | none | extra configuration file, e.g. the branch's category mapping (`file:/config/branch.yaml` in Docker) |
 
 Kafka producer: `acks=all`, idempotence on, a send fails after about 30 s if the branch broker is not reachable. The topics and HQ's consumer group are fixed by the contract.
@@ -162,3 +174,4 @@ Needs JDK 25 and Docker. Tests start their own Kafka, MongoDB and branch databas
 | `ProducerPropertiesTest` | branch code, category mapping and durations are checked at startup, including retention longer than lookback |
 | `SyncStateCleanupTest` | only accepted days older than the retention are deleted; waiting and rejected days stay |
 | `SendSchedulerTest` | random delay stays between 0 and the maximum |
+| `ObservabilityTest` | health reports Kafka, MongoDB and the database; the Prometheus endpoint has the `sync_state` gauges, the overdue gauge and the send counters |

@@ -7,11 +7,18 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
+
+import org.jspecify.annotations.Nullable;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
 
 import io.github.mpiumakkho.branchsales.producer.config.ProducerProperties;
 import io.github.mpiumakkho.branchsales.producer.dto.ConfirmedSales;
@@ -48,9 +55,12 @@ public class SendRound {
 	private final Duration lookback;
 	private final Duration resendAfter;
 	private final AtomicBoolean running = new AtomicBoolean();
+	private final Counter sentCounter;
+	private final Counter failedCounter;
+	private volatile @Nullable Instant lastRoundAt;
 
 	public SendRound(ConfirmedSalesReader reader, SummaryMessageWriter writer, SummaryPublisher publisher,
-			SyncStateStore states, Clock clock, ProducerProperties properties) {
+			SyncStateStore states, Clock clock, ProducerProperties properties, MeterRegistry meters) {
 		this.reader = reader;
 		this.writer = writer;
 		this.publisher = publisher;
@@ -58,6 +68,17 @@ public class SendRound {
 		this.clock = clock;
 		this.lookback = properties.lookback();
 		this.resendAfter = properties.resendAfter();
+		this.sentCounter = Counter.builder("branch_sales.days.sent")
+				.description("Days (revisions) acknowledged by the branch broker").register(meters);
+		this.failedCounter = Counter.builder("branch_sales.days.failed")
+				.description("Send attempts that failed: bad data or no broker ack").register(meters);
+		Gauge.builder("branch_sales.send_round.last", this, r -> r.lastRoundAt == null ? 0 : r.lastRoundAt.getEpochSecond())
+				.description("When the last send round finished (epoch seconds, 0 = none yet)").register(meters);
+	}
+
+	/** When the last round finished, if any. */
+	public Optional<Instant> lastRound() {
+		return Optional.ofNullable(lastRoundAt);
 	}
 
 	public record Result(int pending, int sent, int failed) {
@@ -110,6 +131,9 @@ public class SendRound {
 			sent++;
 		}
 		Result result = new Result(pending.size(), sent, failed);
+		sentCounter.increment(sent);
+		failedCounter.increment(failed);
+		lastRoundAt = clock.instant();
 		log.info("Send round finished: {} pending, {} sent, {} failed", result.pending(), result.sent(), result.failed());
 		return result;
 	}
