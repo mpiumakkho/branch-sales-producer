@@ -64,9 +64,12 @@ public class SyncStateStore {
 		return mongo.count(query(where("status").is(status.name())), COLLECTION);
 	}
 
-	/** SENT documents whose last send is older than the cutoff: no HQ receipt within resend-after (metrics). */
-	public long countSentBefore(Instant cutoff) {
-		return mongo.count(query(where("status").is(Status.SENT.name()).and("sentAt").lt(Date.from(cutoff))), COLLECTION);
+	/**
+	 * SENT documents sent more than once: the first copy got no HQ receipt within resend-after, and the resend has
+	 * none yet either (metrics). Stays counted until a receipt arrives, unlike the age of the last send.
+	 */
+	public long countResent() {
+		return mongo.count(query(where("status").is(Status.SENT.name()).and("attempts").gt(1)), COLLECTION);
 	}
 
 	/** @return states by {@link SyncState#id}; days never sent have no entry */

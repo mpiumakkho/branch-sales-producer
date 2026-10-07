@@ -109,9 +109,9 @@ Health and Prometheus metrics on the HTTP port (`PRODUCER_HTTP_PORT`, 8080). No 
 | Endpoint | Content |
 |---|---|
 | `/actuator/health` | `UP` or `DOWN` with components `kafka` (the branch broker answers, cluster id and node count), `mongo` (`sync_state`) and `db` (the back-office database) |
-| `/actuator/prometheus` | `branch_sales_sync_state{status}` days by send state; `branch_sales_sync_state_overdue` days `SENT` without an HQ receipt for longer than `SEND_RESEND_AFTER` (HQ is not reading this branch); `branch_sales_days_sent_total`, `branch_sales_days_failed_total`; `branch_sales_send_round_last` when the last round finished (epoch seconds); plus the Kafka client, MongoDB, JDBC pool and JVM metrics from Spring Boot |
+| `/actuator/prometheus` | `branch_sales_sync_state{status}` days by send state; `branch_sales_sync_state_resent` days `SENT` more than once and still without an HQ receipt (HQ is not reading this branch; stays until a receipt arrives); both read from MongoDB once a minute, never during a scrape. `branch_sales_days_sent_total`, `branch_sales_days_failed_total`; `branch_sales_send_round_last` when the last round finished (epoch seconds); plus the Kafka client, MongoDB, JDBC pool and JVM metrics from Spring Boot |
 
-Alerts worth having: `branch_sales_sync_state_overdue > 0`, `branch_sales_sync_state{status="FAILED"} > 0` after two rounds, `branch_sales_sync_state{status="HQ_REJECTED"} > 0`, and `time() - branch_sales_send_round_last` above two round intervals.
+Alerts worth having: `branch_sales_sync_state_resent > 0`, `branch_sales_sync_state{status="FAILED"} > 0` after two rounds, `branch_sales_sync_state{status="HQ_REJECTED"} > 0`, and `time() - branch_sales_send_round_last` above two round intervals.
 
 ## Run with Docker
 
@@ -174,4 +174,4 @@ Needs JDK 25 and Docker. Tests start their own Kafka, MongoDB and branch databas
 | `ProducerPropertiesTest` | branch code, category mapping and durations are checked at startup, including retention longer than lookback |
 | `SyncStateCleanupTest` | only accepted days older than the retention are deleted; waiting and rejected days stay |
 | `SendSchedulerTest` | random delay stays between 0 and the maximum |
-| `ObservabilityTest` | health reports Kafka, MongoDB and the database; the Prometheus endpoint has the `sync_state` gauges, the overdue gauge and the send counters |
+| `ObservabilityTest` | health reports Kafka, MongoDB and the database; the Prometheus endpoint has the `sync_state` gauges, the resent gauge and the send counters |

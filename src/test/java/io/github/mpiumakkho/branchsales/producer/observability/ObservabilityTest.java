@@ -2,10 +2,7 @@ package io.github.mpiumakkho.branchsales.producer.observability;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.time.Duration;
-import java.time.Instant;
 import java.time.LocalDate;
-import java.util.Date;
 import java.util.List;
 import java.util.UUID;
 
@@ -17,9 +14,7 @@ import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
 import org.springframework.context.annotation.Import;
 import org.springframework.core.env.Environment;
 import org.springframework.data.mongodb.core.MongoTemplate;
-import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
-import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.web.client.RestClient;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -37,8 +32,7 @@ import io.github.mpiumakkho.branchsales.producer.service.SendRound;
 @SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT, properties = {
 		"branch-sales.schedule.cron=-",
 		"branch-sales.schedule.cleanup-cron=-",
-		"branch-sales.branch-code=BR0001",
-		"branch-sales.resend-after=24h" })
+		"branch-sales.branch-code=BR0001" })
 @Import({ TestcontainersConfiguration.class, BranchDatabases.Postgres.class })
 class ObservabilityTest {
 
@@ -52,6 +46,9 @@ class ObservabilityTest {
 
 	@Autowired
 	SendRound round;
+
+	@Autowired
+	ProducerMetrics metrics;
 
 	@Autowired
 	Environment environment;
@@ -77,14 +74,14 @@ class ObservabilityTest {
 	@Test
 	void prometheusReportsSyncStateAndRounds() {
 		LocalDate base = LocalDate.of(2026, 1, 1);
-		states.markSent(base, 1, UUID.randomUUID(), 10);                 // SENT, recent
-		states.markSent(base.plusDays(1), 1, UUID.randomUUID(), 11);     // SENT for 2 days: overdue
-		mongo.updateFirst(Query.query(Criteria.where("_id").is(base.plusDays(1) + "#1")),
-				Update.update("sentAt", Date.from(Instant.now().minus(Duration.ofDays(2)))), "sync_state");
+		states.markSent(base, 1, UUID.randomUUID(), 10);                 // SENT once
+		states.markSent(base.plusDays(1), 1, UUID.randomUUID(), 11);     // SENT, no receipt, sent again: resent
+		states.markSent(base.plusDays(1), 1, UUID.randomUUID(), 14);
 		states.markSent(base.plusDays(2), 1, UUID.randomUUID(), 12);
 		states.applyReceipt(new HqReceipt("BR0001", 12, "INSERTED", 1, null, null));   // HQ_ACCEPTED
 		states.markFailed(base.plusDays(3), 1, "no mapping", null);                     // FAILED
 		round.run(); // nothing confirmed in the empty branch database: 0 sent, 0 failed
+		metrics.refresh(); // otherwise once a minute
 
 		List<String> lines = http.get().uri("/actuator/prometheus").retrieve().body(String.class).lines().toList();
 		assertThat(lines).contains(
@@ -92,7 +89,7 @@ class ObservabilityTest {
 				"branch_sales_sync_state{status=\"FAILED\"} 1.0",
 				"branch_sales_sync_state{status=\"HQ_ACCEPTED\"} 1.0",
 				"branch_sales_sync_state{status=\"HQ_REJECTED\"} 0.0",
-				"branch_sales_sync_state_overdue 1.0",
+				"branch_sales_sync_state_resent 1.0",
 				"branch_sales_days_sent_total 0.0",
 				"branch_sales_days_failed_total 0.0");
 		assertThat(lines).anyMatch(line -> line.startsWith("branch_sales_send_round_last ") && !line.endsWith(" 0.0"));

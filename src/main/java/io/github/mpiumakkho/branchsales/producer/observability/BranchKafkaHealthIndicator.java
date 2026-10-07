@@ -1,8 +1,10 @@
 package io.github.mpiumakkho.branchsales.producer.observability;
 
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.kafka.clients.admin.Admin;
+import org.apache.kafka.clients.admin.DescribeClusterOptions;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.boot.health.contributor.Health;
 import org.springframework.boot.health.contributor.HealthIndicator;
@@ -16,7 +18,8 @@ import org.springframework.stereotype.Component;
 @Component("kafka")
 public class BranchKafkaHealthIndicator implements HealthIndicator, DisposableBean {
 
-	private static final long TIMEOUT_SECONDS = 5;
+	// One deadline for the request and for the health call; the health thread never waits longer than this
+	private static final Duration TIMEOUT = Duration.ofSeconds(5);
 
 	private final Admin admin;
 
@@ -27,10 +30,11 @@ public class BranchKafkaHealthIndicator implements HealthIndicator, DisposableBe
 	@Override
 	public Health health() {
 		try {
-			var cluster = admin.describeCluster();
-			int nodes = cluster.nodes().get(TIMEOUT_SECONDS, TimeUnit.SECONDS).size();
-			return Health.up().withDetail("clusterId", cluster.clusterId().get(TIMEOUT_SECONDS, TimeUnit.SECONDS))
-					.withDetail("nodes", nodes).build();
+			var cluster = admin.describeCluster(new DescribeClusterOptions().timeoutMs((int) TIMEOUT.toMillis()));
+			long deadline = System.nanoTime() + TIMEOUT.toNanos();
+			int nodes = cluster.nodes().get(TIMEOUT.toMillis(), TimeUnit.MILLISECONDS).size();
+			String clusterId = cluster.clusterId().get(Math.max(1, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+			return Health.up().withDetail("clusterId", clusterId).withDetail("nodes", nodes).build();
 		}
 		catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
@@ -43,6 +47,6 @@ public class BranchKafkaHealthIndicator implements HealthIndicator, DisposableBe
 
 	@Override
 	public void destroy() {
-		admin.close();
+		admin.close(TIMEOUT);
 	}
 }
