@@ -3,7 +3,7 @@ spring:
     name: branch-sales-producer
 
   datasource:
-    # Branch back-office database. Read only: the producer needs SELECT on daily_sales and daily_sales_line
+    # Branch back-office database. Read only: the producer needs SELECT on daily_sales, daily_sales_line, daily_return and daily_return_line
     url: ${BRANCH_DB_URL:jdbc:postgresql://localhost:5434/branch}
     username: ${BRANCH_DB_USER:branch_app}
     password: ${BRANCH_DB_PASSWORD}

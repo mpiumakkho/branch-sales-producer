@@ -146,7 +146,7 @@ The full walkthrough with HQ and two branches, including the failure cases, is i
 |---|---|---|
 | `BRANCH_CODE` | none | required: this branch's code in the HQ branch registry (`branch-sales.branch-code`). Only back-office days with this `branch_code` are sent |
 | `BRANCH_DB_URL` | `jdbc:postgresql://localhost:5434/branch` | branch back-office database: PostgreSQL, MySQL or SQL Server ([examples](#supported-databases)) |
-| `BRANCH_DB_USER` | `branch_app` | a login with `SELECT` on `daily_sales` and `daily_sales_line` |
+| `BRANCH_DB_USER` | `branch_app` | a login with `SELECT` on `daily_sales`, `daily_sales_line`, `daily_return` and `daily_return_line` (a round whose return tables cannot be read still sends the sales and logs the error) |
 | `BRANCH_DB_PASSWORD` | none | required |
 | `MONGODB_URI` | `mongodb://localhost:27017/branch_sales` | the branch's MongoDB, database for `sync_state` |
 | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | the branch's own broker; in Docker `kafka:19092` |

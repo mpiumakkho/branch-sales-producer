@@ -15,6 +15,8 @@ import org.jspecify.annotations.Nullable;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.NestedExceptionUtils;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Component;
 
 import io.micrometer.core.instrument.Counter;
@@ -105,7 +107,15 @@ public class SendRound {
 	private Result sendPending() {
 		List<ConfirmedDay> pending = new ArrayList<>();
 		for (RecordType type : RecordType.values()) {
-			pending.addAll(pending(type));
+			try {
+				pending.addAll(pending(type));
+			}
+			catch (DataAccessException e) {
+				// e.g. a branch whose back-office has no daily_return tables yet, or whose login cannot read them:
+				// the other types are still sent
+				log.error("Cannot read confirmed {} days from the branch database, skipped this round: {}", type,
+						NestedExceptionUtils.getMostSpecificCause(e).getMessage());
+			}
 		}
 		int sent = 0;
 		int failed = 0;
