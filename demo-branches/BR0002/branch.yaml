@@ -1,4 +1,4 @@
-# Branch BR0002: back-office category code -> HQ category code
+# Branch BR0002: back-office category code -> HQ category code, POS tender code -> HQ tender type
 # C01 (soft drinks) and C02 (coffee counter) are both BEVERAGE at HQ; the producer adds them up into one line.
 # C99 (lottery) is deliberately not mapped, to show what happens with an unmapped code (see demo/README.md).
 branch-sales:
@@ -9,3 +9,9 @@ branch-sales:
     C03: SNACK
     C05: FRESH_FOOD
     C08: PERSONAL_CARE
+  # T1 cash, T2 card, T3 QR. GV (gift voucher) is deliberately not mapped: a closed shift with it is not sent
+  # (FAILED at the branch, demo-branches/BR0002/05-shift-unmapped-tender.sql)
+  tender-mapping:
+    T1: CASH
+    T2: CREDIT_CARD
+    T3: QR_PAYMENT

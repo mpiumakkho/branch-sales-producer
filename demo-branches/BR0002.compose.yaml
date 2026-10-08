@@ -1,4 +1,4 @@
-# Demo branch BR0002. A different back-office with numeric category codes (C01, C02, ...)
+# Demo branch BR0002. A different back-office with numeric category codes (C01, C02, ...) and tender codes (T1, T2, ...)
 name: branch-br0002
 
 services:

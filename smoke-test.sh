@@ -2,7 +2,7 @@
 # Checks a branch after `docker compose -f docker-compose.yml -f demo-branches/<branch>.compose.yaml up -d`, from the `wan`
 # network, the way HQ (or anyone on the internet) reaches the branch:
 #   1. HQ's user can log in over TLS through kafka.<branch>.example:9094, with the HQ CA and host name check
-#   2. HQ's user sees the three contract topics
+#   2. HQ's user sees the four contract topics
 #   3. HQ's user cannot write the summary topic (only the branch producer writes it)
 #   4. a wrong password is refused
 #   5. a client without TLS/SASL cannot use port 9094
@@ -38,7 +38,7 @@ $3"
 echo "1-2. HQ -> $host:9094 (TLS + SCRAM): topics"
 topics=$(hq "$password" SASL_SSL "$BIN/kafka-topics.sh --bootstrap-server $host:9094 \
   --command-config /tmp/client.properties --list 2>&1") || { echo "   FAIL: $topics"; exit 1; }
-for t in branch-sales.daily-summary branch-sales.daily-return branch-sales.receipt; do
+for t in branch-sales.daily-summary branch-sales.daily-return branch-sales.shift-close branch-sales.receipt; do
   grep -qx "$t" <<<"$topics" || { echo "   FAIL: $t not listed: $topics"; exit 1; }
 done
 echo "   ok"

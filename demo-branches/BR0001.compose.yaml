@@ -1,4 +1,4 @@
-# Demo branch BR0001. Back-office category codes: BEV, SNK, RTE, HH
+# Demo branch BR0001. Back-office category codes: BEV, SNK, RTE, HH. POS tender codes: CSH, CRD, DBT, QR
 name: branch-br0001
 
 services:

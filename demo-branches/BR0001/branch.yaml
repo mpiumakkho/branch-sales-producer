@@ -1,4 +1,4 @@
-# Branch BR0001: back-office category code -> HQ category code
+# Branch BR0001: back-office category code -> HQ category code, POS tender code -> HQ tender type
 branch-sales:
   branch-code: BR0001
   category-mapping:
@@ -9,3 +9,8 @@ branch-sales:
     # Gift cards: HQ has no GIFT_CARD category yet, so HQ rejects days that have it (UNKNOWN_CATEGORY) until HQ adds
     # the category and replays them (see demo/README.md in the consumer repo)
     GC: GIFT_CARD
+  tender-mapping:
+    CSH: CASH
+    CRD: CREDIT_CARD
+    DBT: DEBIT_CARD
+    QR: QR_PAYMENT

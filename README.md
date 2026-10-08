@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/mpiumakkho/branch-sales-producer/actions/workflows/ci.yml/badge.svg)](https://github.com/mpiumakkho/branch-sales-producer/actions/workflows/ci.yml)
 
-Branch side of Branch Daily Sales Sync. Every branch runs its own Kafka broker and MongoDB next to the producer. The producer reads the days the branch manager has confirmed in the branch back-office database and publishes them to the branch's Kafka topic `branch-sales.daily-summary`; HQ connects to the branch, reads them, and writes a receipt per record to `branch-sales.receipt`, which the producer records. The branch therefore knows for every day whether HQ stored it or why it was rejected.
+Branch side of Branch Daily Sales Sync. Every branch runs its own Kafka broker and MongoDB next to the producer. The producer reads the days the branch manager has confirmed and the POS shifts that were closed in the branch back-office database and publishes them to the branch's Kafka topics, one per record type: `branch-sales.daily-summary` (sales), `branch-sales.daily-return` (returns) and `branch-sales.shift-close` (shift close per POS terminal). HQ connects to the branch, reads them, and writes a receipt per record to `branch-sales.receipt`, which the producer records. The branch therefore knows for every record whether HQ stored it or why it was rejected.
 
 The message formats are the contract in the HQ consumer repo ([branch-sales-consumer/contract](https://github.com/mpiumakkho/branch-sales-consumer/tree/main/contract)). The two sides share no code; [`contract/`](contract/) holds copies of the schemas that the tests check messages against.
 
@@ -22,12 +22,23 @@ The message formats are the contract in the HQ consumer repo ([branch-sales-cons
 | `daily_sales_line` | back-office system | read: `sale_date`, local `category_code`, `amount`, `quantity` |
 | `daily_return` | back-office system | the returns and voids of one day, same columns with `return_date`; sent to `branch-sales.daily-return` |
 | `daily_return_line` | back-office system | read like `daily_sales_line` |
+| `pos_shift` | back-office system (POS) | one row per `(business_date, terminal_id, shift_no)`: `branch_code`, `cashier_id`, `status` (`OPEN`/`CLOSED`), `revision`, `opened_at`, `closed_at`, `transaction_count`, `cash_expected`, `cash_counted`. Only `CLOSED` shifts are sent, to `branch-sales.shift-close`; `closed_at` is their `confirmedAt` |
+| `pos_shift_tender` | back-office system (POS) | read: the shift key, local `tender_code`, `amount`, `quantity` (number of payments); may be empty for a shift without transactions |
 
-The producer writes nothing to the branch database: a login with `SELECT` on these four tables is enough (the demo creates `branch_sales_reader`, [backoffice/postgresql/reader-user.sh](backoffice/postgresql/reader-user.sh)). Its own state is in MongoDB (below). In a real branch the back-office tables already exist. Here they come from `backoffice/<database>/schema.sql`, and confirmation is simulated with SQL:
+The producer writes nothing to the branch database: a login with `SELECT` on these six tables is enough (the demo creates `branch_sales_reader`, [backoffice/postgresql/reader-user.sh](backoffice/postgresql/reader-user.sh)). Its own state is in MongoDB (below). In a real branch the back-office tables already exist. Here they come from `backoffice/<database>/schema.sql`, and confirmation is simulated with SQL:
 
 ```sql
 update daily_sales set status = 'CONFIRMED', revision = revision + 1, confirmed_at = now() where sale_date = '2026-10-01';
 ```
+
+A shift is closed the same way by the POS (Z-report). Reopening sets it back to `OPEN`; closing it again sends the next revision of the same shift, never a new `shift_no`:
+
+```sql
+update pos_shift set status = 'CLOSED', revision = revision + 1, closed_at = now(), cash_counted = 9100.00
+ where business_date = '2026-10-01' and terminal_id = 'POS01' and shift_no = 1;
+```
+
+`business_date` is the business day the shift was opened under; a night shift that closes after midnight keeps it.
 
 ### Supported databases
 
@@ -48,7 +59,7 @@ Days and lines are read in one read-only transaction that sees one snapshot, so 
 
 ## Send state (MongoDB)
 
-Collection `sync_state`, one document per `(type, date, revision)`, id `DAILY_SUMMARY#2026-10-01#1` or `DAILY_RETURN#2026-10-01#1` (documents from before returns existed are renamed at start-up):
+Collection `sync_state`, one document per `(type, key, revision)`, id `DAILY_SUMMARY#2026-10-01#1`, `DAILY_RETURN#2026-10-01#1` or `SHIFT_CLOSE#2026-10-01#POS01#1#1` (terminal `POS01`, shift 1, revision 1; documents from before returns existed are renamed at start-up). The key is also stored as fields (`type`, `date`, and `terminalId`, `shiftNo` for a shift close); the id is never parsed:
 
 | Status | Meaning | Sent again? |
 |---|---|---|
@@ -71,25 +82,26 @@ demo-branches/sync-state.sh BR0001 --history   # with every attempt and receipt
 
 ```
 cron (every hour, Asia/Bangkok) ──► random delay 0–30 min ──► round:
-   read CONFIRMED days of the last SEND_LOOKBACK days, oldest first, sales first and then returns; keep those whose revision needs sending (table above)
-   for each day: map categories → write message → send to the topic of its type at the branch broker, wait for ack (acks=all) → SENT
+   read CONFIRMED days and CLOSED shifts of the last SEND_LOOKBACK days, oldest first: sales, then returns, then shift closes; keep those whose revision needs sending (table above)
+   for each record: map categories or tenders → write message → send to the topic of its type at the branch broker, wait for ack (acks=all) → SENT
 ```
 
 | Situation | Result |
 |---|---|
 | Broker acknowledged | `SENT`, `attempts + 1`, offset added to `sentOffsets` |
-| Data cannot form a valid message (unmapped category, negative amount, no lines, `branch_code` not the configured branch, ...) | `FAILED` with `lastError`; the round continues with the next day; tried again every round |
+| Data cannot form a valid message (unmapped category or tender, negative amount, no lines, `branch_code` not the configured branch; for a shift: `terminal_id` outside `^[A-Z0-9_-]{1,20}$`, no `closed_at` or cash figures, `closed_at` before `opened_at`, ...) | `FAILED` with `lastError`; the round continues with the next record; tried again every round |
+| The back-office has no `daily_return` or `pos_shift` tables yet (or the login cannot read them) | that type is skipped and the error is logged every round; the other types are sent |
 | Branch broker not reachable | `FAILED` with `lastError`; the round stops; remaining days stay pending for the next round |
 | Manager edits and re-confirms | the new revision is sent; the old revision's document stays |
 | HQ's receipt arrives before `SENT` was written (HQ can answer within milliseconds) | the receipt listener retries for about 10 s, then applies it; after that it is logged and skipped, and the revision is sent again after `SEND_RESEND_AFTER` |
 
-Every day has key `branchCode` and each topic has one partition, so HQ reads a branch's days of one type in order. Sales and returns are two topics, so HQ may read a day's returns before its sales; HQ then answers `PARENT_MISSING` and stores the returns by itself once the sales arrive, with a second receipt. The branch does nothing about it.
+Every record has key `branchCode` and each topic has one partition, so HQ reads a branch's records of one type in order. Sales and returns are two topics, so HQ may read a day's returns before its sales; HQ then answers `PARENT_MISSING` and stores the returns by itself once the sales arrive, with a second receipt. The branch does nothing about it. Shift closes do not depend on the day's sales: HQ stores them in any order.
 
 ## Branch identity
 
-The branch code comes from configuration (`branch-sales.branch-code`), not from the back-office data. It is the record key and the `branchCode` of every message, and HQ checks it against the branch whose broker it read the record from. A back-office day whose `daily_sales.branch_code` is different (a re-coded branch, a database copied from another branch) is not sent: it is recorded as `FAILED`, because HQ would otherwise store it under the other code or reject it. A receipt for another branch code is logged and ignored.
+The branch code comes from configuration (`branch-sales.branch-code`), not from the back-office data. It is the record key and the `branchCode` of every message, and HQ checks it against the branch whose broker it read the record from. A back-office record whose `branch_code` (`daily_sales`, `daily_return`, `pos_shift`) is different (a re-coded branch, a database copied from another branch) is not sent: it is recorded as `FAILED`, because HQ would otherwise store it under the other code or reject it. A receipt for another branch code is logged and ignored.
 
-At startup the producer checks the branch code and every mapped HQ category code against the contract patterns, and does not start if one is wrong.
+At startup the producer checks the branch code and every mapped HQ category code and tender type against the contract patterns, and does not start if one is wrong.
 
 ## Category mapping
 
@@ -102,7 +114,13 @@ branch-sales:
     BEV: BEVERAGE
     DRINK_HOT: BEVERAGE
     SNK: SNACK
+  tender-mapping:
+    CSH: CASH
+    CRD: CREDIT_CARD
+    QR: QR_PAYMENT
 ```
+
+POS tender codes are mapped to the HQ tender types ([tender-types.md](https://github.com/mpiumakkho/branch-sales-consumer/blob/main/contract/tender-types.md)) by `tender-mapping` with the same rules. A closed shift with an unmapped tender is not sent and is recorded as `FAILED`.
 
 ## Monitoring
 
@@ -132,11 +150,11 @@ demo-branches/sync-state.sh BR0001                                  # its send s
 | `branch-db` | `postgres:18.6-alpine` | Simulated back-office; the producer logs in as `branch_sales_reader` (SELECT only) |
 | `mongodb` | `mongo:8.0.16` | `sync_state`; the producer logs in as `branch_sales` (readWrite on `branch_sales`) |
 | `kafka` | `apache/kafka:4.3.1` | Single KRaft node. Listeners: `LOCAL` `kafka:19092` PLAINTEXT (branch network only), `EXTERNAL` `:9094` SASL_SSL (for HQ, through the edge), `CONTROLLER` `:9093`. ACLs on; `User:ANONYMOUS` on `LOCAL` is a super user |
-| `kafka-init` | `apache/kafka:4.3.1` | Creates `branch-sales.daily-summary`, `branch-sales.daily-return` and `branch-sales.receipt` (1 partition, 30 days), user `hq` with HQ's password, and its ACLs (read summaries and returns, write receipts, group `hq-branch-sales-consumer`), then exits. Run again after a password change |
+| `kafka-init` | `apache/kafka:4.3.1` | Creates `branch-sales.daily-summary`, `branch-sales.daily-return`, `branch-sales.shift-close` and `branch-sales.receipt` (1 partition, 30 days), user `hq` with HQ's password, and its ACLs (read the three record topics, write receipts, group `hq-branch-sales-consumer`), then exits. Run again after a password change or an upgrade that adds a topic |
 | `edge` | `haproxy:3.2.25-alpine` | Stands in for the branch firewall: the only branch container on `branch-sales-wan`, under the alias `kafka.<branch>.example`, forwarding TCP 9094 to the broker's `EXTERNAL` listener. TLS passes through ([edge/haproxy.cfg](edge/haproxy.cfg)) |
 | `producer` | built from this repo | |
 
-`smoke-test.sh` runs from `wan`, as HQ connects: HQ's user can log in over TLS (host name checked against the HQ CA) and sees the three topics, cannot write the summary topic, a wrong password and a plaintext client are refused, and nothing but the edge's port 9094 is reachable from `wan` (not Kafka's other ports, MongoDB, the database or the producer).
+`smoke-test.sh` runs from `wan`, as HQ connects: HQ's user can log in over TLS (host name checked against the HQ CA) and sees the four topics, cannot write the summary topic, a wrong password and a plaintext client are refused, and nothing but the edge's port 9094 is reachable from `wan` (not Kafka's other ports, MongoDB, the database or the producer).
 
 The full walkthrough with HQ and two branches, including the failure cases, is in the consumer repo: [demo/README.md](https://github.com/mpiumakkho/branch-sales-consumer/blob/main/demo/README.md).
 
@@ -146,7 +164,7 @@ The full walkthrough with HQ and two branches, including the failure cases, is i
 |---|---|---|
 | `BRANCH_CODE` | none | required: this branch's code in the HQ branch registry (`branch-sales.branch-code`). Only back-office days with this `branch_code` are sent |
 | `BRANCH_DB_URL` | `jdbc:postgresql://localhost:5434/branch` | branch back-office database: PostgreSQL, MySQL or SQL Server ([examples](#supported-databases)) |
-| `BRANCH_DB_USER` | `branch_app` | a login with `SELECT` on `daily_sales`, `daily_sales_line`, `daily_return` and `daily_return_line` (a round whose return tables cannot be read still sends the sales and logs the error) |
+| `BRANCH_DB_USER` | `branch_app` | a login with `SELECT` on `daily_sales`, `daily_sales_line`, `daily_return`, `daily_return_line`, `pos_shift` and `pos_shift_tender` (a round whose return or shift tables cannot be read still sends the other types and logs the error) |
 | `BRANCH_DB_PASSWORD` | none | required |
 | `MONGODB_URI` | `mongodb://localhost:27017/branch_sales` | the branch's MongoDB, database for `sync_state` |
 | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | the branch's own broker; in Docker `kafka:19092` |
@@ -157,7 +175,7 @@ The full walkthrough with HQ and two branches, including the failure cases, is i
 | `SEND_STATE_RETENTION` | `90d` | send state of accepted days is deleted this long after its last change; must exceed `SEND_LOOKBACK` |
 | `CLEANUP_CRON` | `0 30 3 * * *` | when the clean-up runs (Spring cron, Asia/Bangkok); `-` disables it |
 | `PRODUCER_HTTP_PORT` | `8080` | health and metrics (see Monitoring) |
-| `SPRING_CONFIG_ADDITIONAL_LOCATION` | none | extra configuration file, e.g. the branch's category mapping (`file:/config/branch.yaml` in Docker) |
+| `SPRING_CONFIG_ADDITIONAL_LOCATION` | none | extra configuration file, e.g. the branch's category and tender mapping (`file:/config/branch.yaml` in Docker) |
 
 Kafka producer: `acks=all`, idempotence on, a send fails after about 30 s if the branch broker is not reachable. The topics and HQ's consumer group are fixed by the contract.
 
@@ -171,9 +189,10 @@ Needs JDK 25 and Docker. Tests start their own Kafka, MongoDB and branch databas
 
 | Test | Checks |
 |---|---|
-| `DailyMessageWriterTest` | messages are valid against the contract schema of their type (`saleDate` / `returnDate`); money format, Bangkok time with seconds, category mapping and merging, data rejected before sending |
-| `PostgresSendRoundTest`, `MySqlSendRoundTest`, `SqlServerSendRoundTest` | the same tests ([AbstractSendRoundTest](src/test/java/io/github/mpiumakkho/branchsales/producer/service/AbstractSendRoundTest.java)) on each database: only confirmed revisions are sent, once; `SENT` waits for HQ and becomes `HQ_ACCEPTED` or `HQ_REJECTED` from the receipt; a rejected day is not sent again until re-confirmed, and a later `INSERTED` receipt (HQ replay) accepts it; a `SENT` day without a receipt is sent again after `resend-after`, and either copy's receipt completes it; a receipt that arrives before `SENT` is applied once the offset is known; days outside the lookback are not read; a bad day does not block other days; reading is not blocked by an open back-office transaction; Kafka failure (simulated and with the broker paused) stops the round and the next round sends everything in date order, with the history showing both attempts; returns go to the return topic and their receipts are matched by type (a receipt without type is for the sales); send state from before returns existed is renamed at start-up |
-| `ProducerPropertiesTest` | branch code, category mapping and durations are checked at startup, including retention longer than lookback |
-| `SyncStateCleanupTest` | only accepted days older than the retention are deleted; waiting and rejected days stay |
+| `DailyMessageWriterTest` | messages are valid against the contract schema of their type (`saleDate` / `returnDate` / shift close with its exact field order); money format, Bangkok time with seconds, category and tender mapping and merging, a shift without transactions has empty lines, data rejected before sending (unmapped code, terminal id outside the pattern, closed before opened, missing or malformed cash figures, more than 20 tenders) |
+| `PostgresSendRoundTest`, `MySqlSendRoundTest`, `SqlServerSendRoundTest` | the same tests ([AbstractSendRoundTest](src/test/java/io/github/mpiumakkho/branchsales/producer/service/AbstractSendRoundTest.java)) on each database: only confirmed revisions are sent, once; `SENT` waits for HQ and becomes `HQ_ACCEPTED` or `HQ_REJECTED` from the receipt; a rejected day is not sent again until re-confirmed, and a later `INSERTED` receipt (HQ replay) accepts it; a `SENT` day without a receipt is sent again after `resend-after`, and either copy's receipt completes it; a receipt that arrives before `SENT` is applied once the offset is known; days outside the lookback are not read; a bad day does not block other days; reading is not blocked by an open back-office transaction; Kafka failure (simulated and with the broker paused) stops the round and the next round sends everything in date order, with the history showing both attempts; returns go to the return topic and their receipts are matched by type (a receipt without type is for the sales); send state from before returns existed is renamed at start-up; closed shifts go to the shift-close topic with id `SHIFT_CLOSE#<date>#<terminal>#<shift>#<revision>`, two shifts of one terminal and day keep their own tenders, open shifts are not sent, a reopened shift is sent as the next revision, a shift with an unmapped tender or closed before it was opened is `FAILED`, the round sends sales, returns, then shift closes. PostgreSQL only: a branch without the return or the shift tables still sends the other types |
+| `ProducerPropertiesTest` | branch code, category and tender mapping, distinct record topics and durations are checked at startup, including retention longer than lookback; every record type has a topic |
+| `SyncStateStoreTest` | a shift close id has five segments and stores `terminalId`/`shiftNo`; `find` rebuilds the key; the legacy id migration leaves shift ids alone |
+| `SyncStateCleanupTest` | only accepted records (days and shift closes) older than the retention are deleted; waiting and rejected days stay |
 | `SendSchedulerTest` | random delay stays between 0 and the maximum |
 | `ObservabilityTest` | health reports Kafka, MongoDB and the database; the Prometheus endpoint has the `sync_state` gauges, the resent gauge and the send counters |

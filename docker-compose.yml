@@ -70,8 +70,8 @@ services:
       KAFKA_LISTENER_NAME_EXTERNAL_SASL_ENABLED_MECHANISMS: SCRAM-SHA-512
       # Env names: "." -> "_", "_" -> "__", "-" -> "___"  (listener.name.external.scram-sha-512.sasl.jaas.config)
       KAFKA_LISTENER_NAME_EXTERNAL_SCRAM___SHA___512_SASL_JAAS_CONFIG: org.apache.kafka.common.security.scram.ScramLoginModule required;
-      # ACLs: HQ's user may read summaries and write receipts only (kafka-init). Clients on LOCAL have no identity
-      # (User:ANONYMOUS) and are trusted as branch-internal.
+      # ACLs: HQ's user may read the record topics and write receipts only (kafka-init). Clients on LOCAL have no
+      # identity (User:ANONYMOUS) and are trusted as branch-internal.
       KAFKA_AUTHORIZER_CLASS_NAME: org.apache.kafka.metadata.authorizer.StandardAuthorizer
       KAFKA_SUPER_USERS: User:ANONYMOUS
       KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
@@ -98,7 +98,8 @@ services:
       retries: 12
       start_period: 20s
 
-  # Creates the two contract topics, HQ's SCRAM user and its ACLs, then exits. Safe to run again (new password).
+  # Creates the three record topics and the receipt topic, HQ's SCRAM user and its ACLs, then exits. Safe to run again
+  # (new password, or new topics after an upgrade).
   kafka-init:
     image: apache/kafka:4.3.1
     depends_on:
@@ -116,14 +117,15 @@ services:
         B="--bootstrap-server kafka:19092"
         K=/opt/kafka/bin
         # One partition each (order of revisions); 30 days, since HQ may not read for days
-        for t in branch-sales.daily-summary branch-sales.daily-return branch-sales.receipt; do
+        for t in branch-sales.daily-summary branch-sales.daily-return branch-sales.shift-close branch-sales.receipt; do
           $$K/kafka-topics.sh $$B --create --if-not-exists --topic $$t --partitions 1 --replication-factor 1 \
             --config retention.ms=2592000000
         done
         $$K/kafka-configs.sh $$B --alter --entity-type users --entity-name hq \
           --add-config "SCRAM-SHA-512=[iterations=8192,password=$$HQ_KAFKA_PASSWORD]" > /dev/null
         $$K/kafka-acls.sh $$B --add --allow-principal User:hq --operation Read --operation Describe \
-          --topic branch-sales.daily-summary --topic branch-sales.daily-return > /dev/null
+          --topic branch-sales.daily-summary --topic branch-sales.daily-return --topic branch-sales.shift-close \
+          > /dev/null
         $$K/kafka-acls.sh $$B --add --allow-principal User:hq --operation Write --operation Describe \
           --topic branch-sales.receipt > /dev/null
         $$K/kafka-acls.sh $$B --add --allow-principal User:hq --operation Read --group hq-branch-sales-consumer > /dev/null
