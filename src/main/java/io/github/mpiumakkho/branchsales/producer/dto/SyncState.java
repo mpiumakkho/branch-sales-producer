@@ -1,16 +1,15 @@
 package io.github.mpiumakkho.branchsales.producer.dto;
 
 import java.time.Instant;
-import java.time.LocalDate;
 
 import org.jspecify.annotations.Nullable;
 
 /**
- * Send state of one (type, date, revision), one MongoDB document in {@code sync_state} (requirements §6).
+ * Send state of one (type, key, revision), one MongoDB document in {@code sync_state} (requirements §6).
  *
  * @param sentAt when the last message for this revision was acknowledged by the branch broker, if ever
  */
-public record SyncState(RecordType type, LocalDate date, int revision, Status status, int attempts,
+public record SyncState(RecordType type, RecordKey key, int revision, Status status, int attempts,
 		@Nullable Instant sentAt) {
 
 	public enum Status {
@@ -24,8 +23,11 @@ public record SyncState(RecordType type, LocalDate date, int revision, Status st
 		HQ_REJECTED
 	}
 
-	/** Document id: one per (type, date, revision), e.g. {@code DAILY_SUMMARY#2026-10-01#1}. */
-	public static String id(RecordType type, LocalDate date, int revision) {
-		return type + "#" + date + "#" + revision;
+	/**
+	 * Document id: one per (type, key, revision), e.g. {@code DAILY_SUMMARY#2026-10-01#1} or
+	 * {@code SHIFT_CLOSE#2026-10-01#POS01#1#2} (terminal POS01, shift 1, revision 2). A lookup key only, never parsed.
+	 */
+	public static String id(RecordType type, RecordKey key, int revision) {
+		return type + "#" + key.idPart() + "#" + revision;
 	}
 }

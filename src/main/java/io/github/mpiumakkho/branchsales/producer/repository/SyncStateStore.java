@@ -26,13 +26,17 @@ import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.stereotype.Repository;
 
 import io.github.mpiumakkho.branchsales.producer.dto.HqReceipt;
+import io.github.mpiumakkho.branchsales.producer.dto.RecordKey;
+import io.github.mpiumakkho.branchsales.producer.dto.RecordKey.DayKey;
+import io.github.mpiumakkho.branchsales.producer.dto.RecordKey.ShiftKey;
 import io.github.mpiumakkho.branchsales.producer.dto.RecordType;
 import io.github.mpiumakkho.branchsales.producer.dto.SyncState;
 import io.github.mpiumakkho.branchsales.producer.dto.SyncState.Status;
 
 /**
- * Send state in the branch's MongoDB, collection {@code sync_state}: one document per (type, date, revision), id
- * {@link SyncState#id}. Every change is one update of one document, so it is atomic without transactions, and is
+ * Send state in the branch's MongoDB, collection {@code sync_state}: one document per (type, key, revision), id
+ * {@link SyncState#id}. The key is also stored as fields ({@code date}, plus {@code terminalId} and {@code shiftNo}
+ * for a shift close), so the id is never parsed. Every change is one update of one document, so it is atomic without transactions, and is
  * written as soon as it happens (requirements §6, §16).
  * <p>
  * Receipts are matched by (type, offset): offsets are per topic, and each type has its own topic.
@@ -103,14 +107,15 @@ public class SyncStateStore {
 		return mongo.count(query(where("status").is(Status.SENT.name()).and("attempts").gt(1)), COLLECTION);
 	}
 
-	/** @return states by {@link SyncState#id}; days never sent have no entry */
+	/** @return states by {@link SyncState#id}; records never sent have no entry */
 	public Map<String, SyncState> find(Collection<String> ids) {
 		Map<String, SyncState> states = new HashMap<>();
 		for (Document doc : mongo.find(query(where("_id").in(ids)), Document.class, COLLECTION)) {
 			Date sentAt = doc.getDate("sentAt");
+			RecordType type = RecordType.valueOf(doc.getString("type"));
 			states.put(doc.getString("_id"), new SyncState(
-					RecordType.valueOf(doc.getString("type")),
-					LocalDate.parse(doc.getString("date")),
+					type,
+					key(type, doc),
 					doc.getInteger("revision"),
 					Status.valueOf(doc.getString("status")),
 					doc.getInteger("attempts", 0),
@@ -119,8 +124,16 @@ public class SyncStateStore {
 		return states;
 	}
 
+	private static RecordKey key(RecordType type, Document doc) {
+		LocalDate date = LocalDate.parse(doc.getString("date"));
+		return switch (type.keyKind()) {
+			case DAY -> new DayKey(date);
+			case SHIFT -> new ShiftKey(date, doc.getString("terminalId"), doc.getInteger("shiftNo"));
+		};
+	}
+
 	/** Called only after the branch broker acknowledged the message. */
-	public void markSent(RecordType type, LocalDate date, int revision, UUID eventId, long offset) {
+	public void markSent(RecordType type, RecordKey key, int revision, UUID eventId, long offset) {
 		Instant now = clock.instant();
 		Document event = event(now, "SENT").append("eventId", eventId.toString()).append("offset", offset);
 		Update update = new Update()
@@ -132,7 +145,7 @@ public class SyncStateStore {
 				.inc("attempts", 1)
 				.addToSet("sentOffsets", offset);
 		update.push("history").slice(-HISTORY_SIZE).each(event);
-		writeUnlessFinal(type, date, revision, update, event, offset);
+		writeUnlessFinal(type, key, revision, update, event, offset);
 	}
 
 	/**
@@ -140,7 +153,7 @@ public class SyncStateStore {
 	 * @param eventId the message that was not acknowledged, or null if no message could be written from the data.
 	 *                A message that was not acknowledged may still have reached Kafka, so HQ may still receive it.
 	 */
-	public void markFailed(RecordType type, LocalDate date, int revision, String error, @Nullable UUID eventId) {
+	public void markFailed(RecordType type, RecordKey key, int revision, String error, @Nullable UUID eventId) {
 		Instant now = clock.instant();
 		String lastError = error.length() > MAX_ERROR_LENGTH ? error.substring(0, MAX_ERROR_LENGTH) : error;
 		Document event = event(now, "FAILED").append("error", lastError)
@@ -151,7 +164,7 @@ public class SyncStateStore {
 				.set("updatedAt", now)
 				.inc("attempts", 1);
 		update.push("history").slice(-HISTORY_SIZE).each(event);
-		writeUnlessFinal(type, date, revision, update, event, null);
+		writeUnlessFinal(type, key, revision, update, event, null);
 	}
 
 	/**
@@ -203,10 +216,13 @@ public class SyncStateStore {
 	 * Upserts the document unless it is final. A final document (or a concurrent insert) makes the upsert fail on the
 	 * duplicate _id; then only the event is recorded.
 	 */
-	private void writeUnlessFinal(RecordType type, LocalDate date, int revision, Update update, Document event,
+	private void writeUnlessFinal(RecordType type, RecordKey key, int revision, Update update, Document event,
 			@Nullable Long offset) {
-		String id = SyncState.id(type, date, revision);
-		update.setOnInsert("type", type.name()).setOnInsert("date", date.toString()).setOnInsert("revision", revision);
+		String id = SyncState.id(type, key, revision);
+		update.setOnInsert("type", type.name()).setOnInsert("date", key.date().toString()).setOnInsert("revision", revision);
+		if (key instanceof ShiftKey shift) {
+			update.setOnInsert("terminalId", shift.terminalId()).setOnInsert("shiftNo", shift.shiftNo());
+		}
 		try {
 			mongo.upsert(query(where("_id").is(id).and("status").nin(FINAL)), update, COLLECTION);
 		}

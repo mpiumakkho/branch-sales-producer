@@ -2,9 +2,13 @@ package io.github.mpiumakkho.branchsales.producer.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 
+import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.time.Duration;
@@ -33,6 +37,7 @@ import org.bson.Document;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -50,7 +55,10 @@ import tools.jackson.databind.node.ObjectNode;
 
 import io.github.mpiumakkho.branchsales.producer.ContractSchema;
 import io.github.mpiumakkho.branchsales.producer.dto.ConfirmedDay;
+import io.github.mpiumakkho.branchsales.producer.dto.RecordKey.DayKey;
+import io.github.mpiumakkho.branchsales.producer.dto.RecordKey.ShiftKey;
 import io.github.mpiumakkho.branchsales.producer.dto.RecordType;
+import io.github.mpiumakkho.branchsales.producer.dto.SyncState;
 import io.github.mpiumakkho.branchsales.producer.kafka.RecordPublisher;
 import io.github.mpiumakkho.branchsales.producer.repository.ConfirmedDayReader;
 import io.github.mpiumakkho.branchsales.producer.repository.SyncStateStore;
@@ -65,6 +73,9 @@ import io.github.mpiumakkho.branchsales.producer.repository.SyncStateStore;
 		"branch-sales.branch-code=BR0001",
 		"branch-sales.category-mapping.BEV=BEVERAGE",
 		"branch-sales.category-mapping.SNK=SNACK",
+		"branch-sales.tender-mapping.CSH=CASH",
+		"branch-sales.tender-mapping.CRD=CREDIT_CARD",
+		"branch-sales.tender-mapping.QR=QR_PAYMENT",
 		"spring.kafka.producer.properties.delivery.timeout.ms=15000",
 		"spring.kafka.producer.properties.request.timeout.ms=5000" })
 abstract class AbstractSendRoundTest {
@@ -111,6 +122,9 @@ abstract class AbstractSendRoundTest {
 	@Value("${branch-sales.return-topic}")
 	String returnTopic;
 
+	@Value("${branch-sales.shift-close-topic}")
+	String shiftCloseTopic;
+
 	@Value("${branch-sales.receipt-topic}")
 	String receiptTopic;
 
@@ -124,6 +138,8 @@ abstract class AbstractSendRoundTest {
 		jdbc.sql("delete from daily_sales").update();
 		jdbc.sql("delete from daily_return_line").update();
 		jdbc.sql("delete from daily_return").update();
+		jdbc.sql("delete from pos_shift_tender").update();
+		jdbc.sql("delete from pos_shift").update();
 		topicReader = openTopicReaderAtEnd();
 	}
 
@@ -222,7 +238,7 @@ abstract class AbstractSendRoundTest {
 		catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
 		}
-		states.markSent(RecordType.DAILY_SUMMARY, DAY_1, 1, UUID.randomUUID(), 42);
+		states.markSent(RecordType.DAILY_SUMMARY, new DayKey(DAY_1), 1, UUID.randomUUID(), 42);
 		await().atMost(TIMEOUT).until(() -> "HQ_ACCEPTED".equals(state(DAY_1, 1).getString("status")));
 	}
 
@@ -402,6 +418,233 @@ abstract class AbstractSendRoundTest {
 		assertThat(round.run().pending()).isZero(); // still known as accepted
 	}
 
+	@Test
+	void sendsClosedShiftsToTheShiftCloseTopicAndMatchesTheirReceiptsByType() {
+		insertDay(DAY_1, "CONFIRMED", 1);
+		insertClosedShift(DAY_1, "POS01", 1);
+
+		assertThat(round.run()).isEqualTo(new SendRound.Result(2, 2, 0));
+		ConsumerRecord<String, byte[]> sales = readMessages(1).getFirst();
+		ConsumerRecord<String, byte[]> shift = readShiftMessages(1).getFirst();
+		assertThat(shift.key()).isEqualTo("BR0001");
+		assertThat(ContractSchema.shiftErrors(shift.value())).isEmpty();
+		JsonNode json = mapper.readTree(shift.value());
+		assertThat(json.get("businessDate").asString()).isEqualTo(DAY_1.toString());
+		assertThat(json.get("terminalId").asString()).isEqualTo("POS01");
+		assertThat(json.get("shiftNo").intValue()).isEqualTo(1);
+		assertThat(json.get("revision").intValue()).isEqualTo(1);
+		assertThat(json.get("cashierId").asString()).isEqualTo("C101");
+		assertThat(json.get("openedAt").asString()).isEqualTo(DAY_1 + "T07:00:00+07:00");
+		assertThat(json.get("closedAt").asString()).isEqualTo(DAY_1 + "T15:02:11+07:00");
+		assertThat(json.get("confirmedAt").asString()).isEqualTo(DAY_1 + "T15:02:11+07:00");
+		assertThat(json.get("transactionCount").intValue()).isEqualTo(212);
+		assertThat(json.get("totalAmount").asString()).isEqualTo("15350.00");
+		assertThat(json.get("cashExpected").asString()).isEqualTo("9120.00");
+		assertThat(json.get("cashCounted").asString()).isEqualTo("9100.00");
+		assertThat(json.get("lines").toString()).isEqualTo("""
+				[{"tenderType":"CASH","amount":"9120.00","quantity":140},\
+				{"tenderType":"CREDIT_CARD","amount":"6230.00","quantity":48}]""");
+
+		// The key is stored as fields; the id has the terminal and shift before the revision
+		assertThat(shiftState(DAY_1, "POS01", 1, 1)).containsEntry("status", "SENT")
+				.containsEntry("type", "SHIFT_CLOSE")
+				.containsEntry("date", DAY_1.toString())
+				.containsEntry("terminalId", "POS01")
+				.containsEntry("shiftNo", 1)
+				.containsEntry("sentOffsets", List.of(shift.offset()));
+
+		// The receipt's type tells a shift from a sales record sent at the same offset number of its own topic
+		sendReceipt(RecordType.SHIFT_CLOSE, shift.offset(), "INSERTED", null);
+		await().atMost(TIMEOUT).until(() -> "HQ_ACCEPTED".equals(shiftState(DAY_1, "POS01", 1, 1).getString("status")));
+		assertThat(state(DAY_1, 1)).containsEntry("status", "SENT");
+		sendReceipt(sales.offset(), "INSERTED", null);
+		await().atMost(TIMEOUT).until(() -> "HQ_ACCEPTED".equals(state(DAY_1, 1).getString("status")));
+		assertThat(round.run()).isEqualTo(new SendRound.Result(0, 0, 0));
+	}
+
+	@Test
+	void twoShiftsOfTheSameDateAndTerminalAreSeparateRecordsWithTheirOwnTenders() {
+		insertClosedShift(DAY_1, "POS01", 1);
+		insertShift(DAY_1, "POS01", 2, "CLOSED", 1);
+		insertTender(DAY_1, "POS01", 2, "QR", "500.00", 10);
+
+		assertThat(round.run()).isEqualTo(new SendRound.Result(2, 2, 0));
+
+		List<ConsumerRecord<String, byte[]>> records = readShiftMessages(2);
+		JsonNode first = mapper.readTree(records.get(0).value());
+		JsonNode second = mapper.readTree(records.get(1).value());
+		assertThat(first.get("shiftNo").intValue()).isEqualTo(1);
+		assertThat(first.get("totalAmount").asString()).isEqualTo("15350.00");
+		assertThat(first.get("lines")).hasSize(2);
+		assertThat(second.get("shiftNo").intValue()).isEqualTo(2);
+		assertThat(second.get("totalAmount").asString()).isEqualTo("500.00");
+		assertThat(second.get("lines").toString())
+				.isEqualTo("[{\"tenderType\":\"QR_PAYMENT\",\"amount\":\"500.00\",\"quantity\":10}]");
+		assertThat(shiftState(DAY_1, "POS01", 1, 1)).containsEntry("status", "SENT");
+		assertThat(shiftState(DAY_1, "POS01", 2, 1)).containsEntry("status", "SENT");
+	}
+
+	@Test
+	void tenderWhoseTerminalDiffersOnlyInCaseIsReadWithItsShift() throws Exception {
+		// MySQL and SQL Server compare the key case-insensitively by default, so the foreign key and the join accept a
+		// tender row written as 'pos01' for the shift 'POS01'. PostgreSQL rejects that row, so there is nothing to test.
+		String product;
+		try (Connection connection = dataSource.getConnection()) {
+			product = connection.getMetaData().getDatabaseProductName();
+		}
+		assumeFalse(product.equals("PostgreSQL"));
+		insertShift(DAY_1, "POS01", 1, "CLOSED", 1);
+		insertTender(DAY_1, "pos01", 1, "CSH", "9120.00", 140);
+		insertTender(DAY_1, "POS01", 1, "CRD", "6230.00", 48);
+
+		List<ConfirmedDay> shifts = reader.readConfirmed(RecordType.SHIFT_CLOSE, DAY_1);
+		assertThat(shifts).singleElement().satisfies(shift -> {
+			assertThat(shift.key()).isEqualTo(new ShiftKey(DAY_1, "POS01", 1));
+			assertThat(shift.lines()).extracting(ConfirmedDay.Line::localCode).containsExactly("CRD", "CSH");
+		});
+
+		assertThat(round.run()).isEqualTo(new SendRound.Result(1, 1, 0));
+		assertThat(mapper.readTree(readShiftMessages(1).getFirst().value()).get("totalAmount").asString())
+				.isEqualTo("15350.00");
+	}
+
+	@Test
+	void openShiftIsNotSent() {
+		insertShift(DAY_1, "POS01", 1, "OPEN", 0);
+		insertTender(DAY_1, "POS01", 1, "CSH", "100.00", 2);
+		assertThat(round.run().pending()).isZero(); // R15
+
+		closeShift(DAY_1, "POS01", 1, 1);
+		assertThat(round.run()).isEqualTo(new SendRound.Result(1, 1, 0));
+		assertThat(mapper.readTree(readShiftMessages(1).getFirst().value()).get("totalAmount").asString())
+				.isEqualTo("100.00");
+	}
+
+	@Test
+	void reopenedShiftIsSentAsTheNextRevision() {
+		insertClosedShift(DAY_1, "POS01", 1);
+		round.run();
+
+		// The cashier reopens the shift (back to OPEN), corrects a tender and closes it again: revision 2
+		jdbc.sql("update pos_shift set status = 'OPEN' where business_date = ? and terminal_id = 'POS01' and shift_no = 1")
+				.param(DAY_1).update();
+		jdbc.sql("""
+				update pos_shift_tender set amount = 6280.00, quantity = 49
+				 where business_date = ? and terminal_id = 'POS01' and shift_no = 1 and tender_code = 'CRD'""")
+				.param(DAY_1).update();
+		assertThat(round.run().pending()).isZero();
+
+		closeShift(DAY_1, "POS01", 1, 2);
+		assertThat(round.run()).isEqualTo(new SendRound.Result(1, 1, 0));
+
+		List<ConsumerRecord<String, byte[]>> records = readShiftMessages(2);
+		JsonNode revision2 = mapper.readTree(records.get(1).value());
+		assertThat(revision2.get("shiftNo").intValue()).isEqualTo(1);
+		assertThat(revision2.get("revision").intValue()).isEqualTo(2);
+		assertThat(revision2.get("totalAmount").asString()).isEqualTo("15400.00");
+		assertThat(shiftState(DAY_1, "POS01", 1, 1)).containsEntry("status", "SENT");
+		assertThat(shiftState(DAY_1, "POS01", 1, 2)).containsEntry("status", "SENT");
+	}
+
+	@Test
+	void shiftWithUnmappedTenderIsRecordedFailedAndOtherShiftsAreStillSent() {
+		insertClosedShift(DAY_1, "POS01", 1);
+		insertTender(DAY_1, "POS01", 1, "GV", "300.00", 3);
+		insertClosedShift(DAY_1, "POS02", 1);
+
+		assertThat(round.run()).isEqualTo(new SendRound.Result(2, 1, 1));
+
+		assertThat(mapper.readTree(readShiftMessages(1).getFirst().value()).get("terminalId").asString())
+				.isEqualTo("POS02");
+		assertThat(shiftState(DAY_1, "POS01", 1, 1)).containsEntry("status", "FAILED")
+				.containsEntry("lastError", "no HQ tender mapping for local tender [GV]");
+		assertThat(shiftState(DAY_1, "POS02", 1, 1)).containsEntry("status", "SENT");
+	}
+
+	@Test
+	void shiftClosedBeforeOpenedIsRecordedFailed() {
+		insertClosedShift(DAY_1, "POS01", 1);
+		jdbc.sql("update pos_shift set closed_at = ? where business_date = ? and terminal_id = 'POS01' and shift_no = 1")
+				.params(DAY_1.atTime(6, 0).atOffset(ZoneOffset.ofHours(7)), DAY_1).update();
+
+		assertThat(round.run()).isEqualTo(new SendRound.Result(1, 0, 1));
+		assertThat(shiftState(DAY_1, "POS01", 1, 1)).containsEntry("status", "FAILED")
+				.extractingByKey("lastError").asString().startsWith("closed_at ").contains(" is before opened_at ");
+		assertThat(topicReader.poll(Duration.ofSeconds(1))).isEmpty();
+	}
+
+	@Test
+	void shiftsOlderThanTheLookbackAreNotRead() {
+		insertClosedShift(LocalDate.now(BANGKOK).minusDays(61), "POS01", 1);
+		assertThat(round.run().pending()).isZero();
+	}
+
+	@Test
+	void sendRoundOrderIsSalesReturnsThenShifts() {
+		// The shift and the returns are of an older day than the sales: the type order comes first
+		insertClosedShift(DAY_1, "POS01", 1);
+		jdbc.sql("insert into daily_return values (?, 'BR0001', 'CONFIRMED', 1, ?)").params(DAY_1, CONFIRMED_AT).update();
+		jdbc.sql("insert into daily_return_line values (?, 'BEV', 120.00, 3)").param(DAY_1).update();
+		insertDay(DAY_2, "CONFIRMED", 1);
+
+		assertThat(round.run()).isEqualTo(new SendRound.Result(3, 3, 0));
+
+		InOrder order = inOrder(publisher);
+		order.verify(publisher).publish(eq(RecordType.DAILY_SUMMARY), any());
+		order.verify(publisher).publish(eq(RecordType.DAILY_RETURN), any());
+		order.verify(publisher).publish(eq(RecordType.SHIFT_CLOSE), any());
+		readMessages(1);
+		readReturnMessages(1);
+		readShiftMessages(1);
+	}
+
+	/** Shift header without tenders: cashier C101, opened 07:00, closed 15:02:11 if CLOSED, 212 transactions. */
+	private void insertShift(LocalDate day, String terminal, int shiftNo, String status, int revision) {
+		boolean closed = status.equals("CLOSED");
+		jdbc.sql("""
+				insert into pos_shift (business_date, terminal_id, shift_no, branch_code, cashier_id, status, revision,
+				                       opened_at, closed_at, transaction_count, cash_expected, cash_counted)
+				values (?, ?, ?, 'BR0001', 'C101', ?, ?, ?, ?, 212, 9120.00, ?)""")
+				.params(day, terminal, shiftNo, status, revision, shiftOpenedAt(day), closed ? shiftClosedAt(day) : null,
+						closed ? new BigDecimal("9100.00") : null)
+				.update();
+	}
+
+	private void insertTender(LocalDate day, String terminal, int shiftNo, String code, String amount, int quantity) {
+		jdbc.sql("insert into pos_shift_tender values (?, ?, ?, ?, ?, ?)")
+				.params(day, terminal, shiftNo, code, new BigDecimal(amount), quantity)
+				.update();
+	}
+
+	/** Closed shift, revision 1: CSH 9120.00 x 140, CRD 6230.00 x 48 */
+	private void insertClosedShift(LocalDate day, String terminal, int shiftNo) {
+		insertShift(day, terminal, shiftNo, "CLOSED", 1);
+		insertTender(day, terminal, shiftNo, "CSH", "9120.00", 140);
+		insertTender(day, terminal, shiftNo, "CRD", "6230.00", 48);
+	}
+
+	/** What the POS does at the Z-report: CLOSED, the next revision, closing time and counted cash. */
+	private void closeShift(LocalDate day, String terminal, int shiftNo, int revision) {
+		jdbc.sql("""
+				update pos_shift set status = 'CLOSED', revision = ?, closed_at = ?, cash_counted = 9100.00
+				 where business_date = ? and terminal_id = ? and shift_no = ?""")
+				.params(revision, shiftClosedAt(day), day, terminal, shiftNo)
+				.update();
+	}
+
+	private static OffsetDateTime shiftOpenedAt(LocalDate day) {
+		return day.atTime(7, 0).atOffset(ZoneOffset.ofHours(7));
+	}
+
+	private static OffsetDateTime shiftClosedAt(LocalDate day) {
+		return day.atTime(15, 2, 11).atOffset(ZoneOffset.ofHours(7));
+	}
+
+	private Document shiftState(LocalDate day, String terminal, int shiftNo, int revision) {
+		return mongo.findOne(Query.query(Criteria.where("_id").is(SyncState.id(RecordType.SHIFT_CLOSE,
+				new ShiftKey(day, terminal, shiftNo), revision))), Document.class, "sync_state");
+	}
+
 	/** BEV 18200.00 x 410, SNK 12050.00 x 395 */
 	private void insertDay(LocalDate day, String status, int revision) {
 		jdbc.sql("insert into daily_sales values (?, 'BR0001', ?, ?, ?)")
@@ -436,6 +679,11 @@ abstract class AbstractSendRoundTest {
 		if (rejectReason == null) {
 			receipt.put("eventId", UUID.randomUUID().toString());
 			receipt.put("saleDate", DAY_1.toString());
+			if (type == RecordType.SHIFT_CLOSE) {
+				// As HQ writes them; the producer matches receipts by (type, sourceOffset) only
+				receipt.put("terminalId", "POS01");
+				receipt.put("shiftNo", 1);
+			}
 			receipt.put("revision", 1);
 			receipt.put("storedRevision", 1);
 		}
@@ -481,7 +729,8 @@ abstract class AbstractSendRoundTest {
 				ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaContainer.getBootstrapServers(),
 				ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false),
 				new StringDeserializer(), new ByteArrayDeserializer());
-		List<TopicPartition> partitions = List.of(new TopicPartition(topic, 0), new TopicPartition(returnTopic, 0));
+		List<TopicPartition> partitions = List.of(new TopicPartition(topic, 0), new TopicPartition(returnTopic, 0),
+				new TopicPartition(shiftCloseTopic, 0));
 		reader.assign(partitions);
 		reader.seekToEnd(partitions);
 		partitions.forEach(reader::position); // resolve end offsets before the test sends anything
@@ -498,7 +747,12 @@ abstract class AbstractSendRoundTest {
 		return readMessages(returnTopic, count);
 	}
 
-	// The reader is assigned both topics; messages of the other topic are kept for the next call
+	/** Exactly {@code count} new messages on the shift-close topic. */
+	private List<ConsumerRecord<String, byte[]>> readShiftMessages(int count) {
+		return readMessages(shiftCloseTopic, count);
+	}
+
+	// The reader is assigned all record topics; messages of the other topics are kept for the next call
 	private final List<ConsumerRecord<String, byte[]>> otherTopic = new ArrayList<>();
 
 	private List<ConsumerRecord<String, byte[]>> readMessages(String wanted, int count) {

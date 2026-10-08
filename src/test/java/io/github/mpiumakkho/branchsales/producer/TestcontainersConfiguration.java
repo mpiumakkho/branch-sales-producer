@@ -10,7 +10,7 @@ import org.testcontainers.mongodb.MongoDBContainer;
 import org.testcontainers.utility.DockerImageName;
 
 /**
- * The branch's own Kafka broker with its two topics, and the branch's MongoDB, with the same images as the branch
+ * The branch's own Kafka broker with its record and receipt topics, and the branch's MongoDB, with the same images as the branch
  * compose file. Combine with one branch database: {@link BranchDatabases.Postgres}, {@link BranchDatabases.MySql} or
  * {@link BranchDatabases.SqlServer}.
  */
@@ -37,6 +37,11 @@ public class TestcontainersConfiguration {
 
 	@Bean
 	NewTopic returnTopic(@Value("${branch-sales.return-topic}") String name) {
+		return new NewTopic(name, 1, (short) 1);
+	}
+
+	@Bean
+	NewTopic shiftCloseTopic(@Value("${branch-sales.shift-close-topic}") String name) {
 		return new NewTopic(name, 1, (short) 1);
 	}
 

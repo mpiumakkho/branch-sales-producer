@@ -3,7 +3,8 @@ spring:
     name: branch-sales-producer
 
   datasource:
-    # Branch back-office database. Read only: the producer needs SELECT on daily_sales, daily_sales_line, daily_return and daily_return_line
+    # Branch back-office database. Read only: the producer needs SELECT on daily_sales, daily_sales_line, daily_return,
+    # daily_return_line, pos_shift and pos_shift_tender
     url: ${BRANCH_DB_URL:jdbc:postgresql://localhost:5434/branch}
     username: ${BRANCH_DB_USER:branch_app}
     password: ${BRANCH_DB_PASSWORD}
@@ -51,10 +52,11 @@ branch-sales:
   # All topics are in the branch's own Kafka (contract/README.md in the consumer repo): one per record type, plus receipts
   topic: branch-sales.daily-summary
   return-topic: branch-sales.daily-return
+  shift-close-topic: branch-sales.shift-close
   receipt-topic: branch-sales.receipt
   receipt-group: branch-sales-producer
   send-timeout: 40s
-  # Confirmed days older than this are not read any more
+  # Confirmed days (and shifts of business dates) older than this are not read any more
   lookback: ${SEND_LOOKBACK:60d}
   # A day sent without an HQ receipt after this long is sent again
   resend-after: ${SEND_RESEND_AFTER:24h}
@@ -69,3 +71,6 @@ branch-sales:
   # Back-office category code -> HQ category code (contract/categories.md in the consumer repo).
   # Set per branch; a day with an unmapped code is not sent and is recorded as FAILED.
   category-mapping: {}
+  # POS tender code -> HQ tender type (contract/tender-types.md in the consumer repo), same rules as category-mapping.
+  # A closed shift with an unmapped tender is not sent and is recorded as FAILED.
+  tender-mapping: {}

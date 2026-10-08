@@ -35,8 +35,9 @@ import io.github.mpiumakkho.branchsales.producer.repository.SyncStateStore;
 import io.github.mpiumakkho.branchsales.producer.service.DailyMessageWriter.Message;
 
 /**
- * One send round: every confirmed day of every record type (within the lookback) whose current revision still needs
- * sending, oldest first. Daily sales go before daily returns, since HQ stores a day's returns only after its sales.
+ * One send round: every confirmed day (or closed shift) of every record type within the lookback whose current revision
+ * still needs sending, oldest first within its type. Sales, returns, then shift closes ({@link RecordType} order):
+ * HQ stores a day's returns only after its sales; shift closes do not depend on either.
  * A revision needs sending when it was never sent, its last attempt FAILED, or it was SENT but HQ has not sent a
  * receipt within {@code resend-after} (e.g. the branch broker lost the message). HQ_ACCEPTED and HQ_REJECTED are final.
  * <ul>
@@ -111,7 +112,7 @@ public class SendRound {
 				pending.addAll(pending(type));
 			}
 			catch (DataAccessException e) {
-				// e.g. a branch whose back-office has no daily_return tables yet, or whose login cannot read them:
+				// e.g. a branch whose back-office has no daily_return or pos_shift tables yet, or whose login cannot read them:
 				// the other types are still sent
 				log.error("Cannot read confirmed {} days from the branch database, skipped this round: {}", type,
 						NestedExceptionUtils.getMostSpecificCause(e).getMessage());
@@ -125,8 +126,8 @@ public class SendRound {
 				message = writer.write(day);
 			}
 			catch (InvalidSalesException e) {
-				log.warn("Not sent {} {} revision {}: {}", day.type(), day.date(), day.revision(), e.getMessage());
-				states.markFailed(day.type(), day.date(), day.revision(), e.getMessage(), null);
+				log.warn("Not sent {} {} revision {}: {}", day.type(), day.key().text(), day.revision(), e.getMessage());
+				states.markFailed(day.type(), day.key(), day.revision(), e.getMessage(), null);
 				failed++;
 				continue;
 			}
@@ -136,13 +137,13 @@ public class SendRound {
 			}
 			catch (PublishException e) {
 				log.warn("Send failed for {} {} revision {}, stopping this round ({} days left pending): {}",
-						day.type(), day.date(), day.revision(), pending.size() - sent - failed - 1, e.getMessage());
-				states.markFailed(day.type(), day.date(), day.revision(), e.getMessage(), message.eventId());
+						day.type(), day.key().text(), day.revision(), pending.size() - sent - failed - 1, e.getMessage());
+				states.markFailed(day.type(), day.key(), day.revision(), e.getMessage(), message.eventId());
 				failed++;
 				break;
 			}
-			states.markSent(day.type(), day.date(), day.revision(), message.eventId(), offset);
-			log.info("Sent {} {} revision {} eventId {} offset {}", day.type(), day.date(), day.revision(),
+			states.markSent(day.type(), day.key(), day.revision(), message.eventId(), offset);
+			log.info("Sent {} {} revision {} eventId {} offset {}", day.type(), day.key().text(), day.revision(),
 					message.eventId(), offset);
 			sent++;
 		}
@@ -158,10 +159,10 @@ public class SendRound {
 		LocalDate since = LocalDate.now(clock.withZone(BANGKOK)).minusDays(lookback.toDays());
 		List<ConfirmedDay> confirmed = reader.readConfirmed(type, since);
 		Map<String, SyncState> known = states.find(
-				confirmed.stream().map(c -> SyncState.id(type, c.date(), c.revision())).toList());
+				confirmed.stream().map(c -> SyncState.id(type, c.key(), c.revision())).toList());
 		Instant resendBefore = clock.instant().minus(resendAfter);
 		return confirmed.stream()
-				.filter(c -> needsSending(known.get(SyncState.id(type, c.date(), c.revision())), resendBefore))
+				.filter(c -> needsSending(known.get(SyncState.id(type, c.key(), c.revision())), resendBefore))
 				.toList();
 	}
 

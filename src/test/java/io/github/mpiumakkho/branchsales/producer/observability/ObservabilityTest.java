@@ -22,6 +22,8 @@ import tools.jackson.databind.json.JsonMapper;
 import io.github.mpiumakkho.branchsales.producer.BranchDatabases;
 import io.github.mpiumakkho.branchsales.producer.TestcontainersConfiguration;
 import io.github.mpiumakkho.branchsales.producer.dto.HqReceipt;
+import io.github.mpiumakkho.branchsales.producer.dto.RecordKey.DayKey;
+import io.github.mpiumakkho.branchsales.producer.dto.RecordKey.ShiftKey;
 import io.github.mpiumakkho.branchsales.producer.dto.RecordType;
 import io.github.mpiumakkho.branchsales.producer.repository.SyncStateStore;
 import io.github.mpiumakkho.branchsales.producer.service.SendRound;
@@ -75,18 +77,19 @@ class ObservabilityTest {
 	@Test
 	void prometheusReportsSyncStateAndRounds() {
 		LocalDate base = LocalDate.of(2026, 1, 1);
-		states.markSent(RecordType.DAILY_SUMMARY, base, 1, UUID.randomUUID(), 10);                 // SENT once
-		states.markSent(RecordType.DAILY_SUMMARY, base.plusDays(1), 1, UUID.randomUUID(), 11);     // SENT, no receipt, sent again: resent
-		states.markSent(RecordType.DAILY_SUMMARY, base.plusDays(1), 1, UUID.randomUUID(), 14);
-		states.markSent(RecordType.DAILY_RETURN, base.plusDays(2), 1, UUID.randomUUID(), 12);
+		states.markSent(RecordType.DAILY_SUMMARY, new DayKey(base), 1, UUID.randomUUID(), 10);                 // SENT once
+		states.markSent(RecordType.DAILY_SUMMARY, new DayKey(base.plusDays(1)), 1, UUID.randomUUID(), 11);     // SENT, no receipt, sent again: resent
+		states.markSent(RecordType.DAILY_SUMMARY, new DayKey(base.plusDays(1)), 1, UUID.randomUUID(), 14);
+		states.markSent(RecordType.DAILY_RETURN, new DayKey(base.plusDays(2)), 1, UUID.randomUUID(), 12);
+		states.markSent(RecordType.SHIFT_CLOSE, new ShiftKey(base, "POS01", 1), 1, UUID.randomUUID(), 12); // SENT: offset 12 of its own topic
 		states.applyReceipt(new HqReceipt(RecordType.DAILY_RETURN, "BR0001", 12, "INSERTED", 1, null, null)); // HQ_ACCEPTED
-		states.markFailed(RecordType.DAILY_SUMMARY, base.plusDays(3), 1, "no mapping", null);                     // FAILED
+		states.markFailed(RecordType.DAILY_SUMMARY, new DayKey(base.plusDays(3)), 1, "no mapping", null);                     // FAILED
 		round.run(); // nothing confirmed in the empty branch database: 0 sent, 0 failed
 		metrics.refresh(); // otherwise once a minute
 
 		List<String> lines = http.get().uri("/actuator/prometheus").retrieve().body(String.class).lines().toList();
 		assertThat(lines).contains(
-				"branch_sales_sync_state{status=\"SENT\"} 2.0",
+				"branch_sales_sync_state{status=\"SENT\"} 3.0",
 				"branch_sales_sync_state{status=\"FAILED\"} 1.0",
 				"branch_sales_sync_state{status=\"HQ_ACCEPTED\"} 1.0",
 				"branch_sales_sync_state{status=\"HQ_REJECTED\"} 0.0",

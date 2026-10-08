@@ -39,3 +39,30 @@ create table daily_return_line (
     quantity      int           not null,
     primary key (return_date, category_code)
 );
+
+create table pos_shift (
+    business_date     date              not null,
+    terminal_id       varchar(20)       not null,
+    shift_no          int               not null,
+    branch_code       varchar(10)       not null,
+    cashier_id        varchar(30),
+    status            varchar(10)       not null check (status in ('OPEN', 'CLOSED')),
+    revision          int               not null default 0,
+    opened_at         datetimeoffset(6) not null,
+    closed_at         datetimeoffset(6),
+    transaction_count int               not null default 0,
+    cash_expected     decimal(12,2),
+    cash_counted      decimal(12,2),
+    primary key (business_date, terminal_id, shift_no)
+);
+
+create table pos_shift_tender (
+    business_date date          not null,
+    terminal_id   varchar(20)   not null,
+    shift_no      int           not null,
+    tender_code   varchar(20)   not null,
+    amount        decimal(12,2) not null,
+    quantity      int           not null,
+    primary key (business_date, terminal_id, shift_no, tender_code),
+    foreign key (business_date, terminal_id, shift_no) references pos_shift (business_date, terminal_id, shift_no)
+);
