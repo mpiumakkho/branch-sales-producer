@@ -36,6 +36,11 @@ public class TestcontainersConfiguration {
 	}
 
 	@Bean
+	NewTopic returnTopic(@Value("${branch-sales.return-topic}") String name) {
+		return new NewTopic(name, 1, (short) 1);
+	}
+
+	@Bean
 	NewTopic receiptTopic(@Value("${branch-sales.receipt-topic}") String name) {
 		return new NewTopic(name, 1, (short) 1);
 	}

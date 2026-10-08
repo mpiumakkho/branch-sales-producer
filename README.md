@@ -20,8 +20,10 @@ The message formats are the contract in the HQ consumer repo ([branch-sales-cons
 |---|---|---|
 | `daily_sales` | back-office system | read: `sale_date`, `branch_code`, `status` (`DRAFT`/`CONFIRMED`), `revision`, `confirmed_at` |
 | `daily_sales_line` | back-office system | read: `sale_date`, local `category_code`, `amount`, `quantity` |
+| `daily_return` | back-office system | the returns and voids of one day, same columns with `return_date`; sent to `branch-sales.daily-return` |
+| `daily_return_line` | back-office system | read like `daily_sales_line` |
 
-The producer writes nothing to the branch database: a login with `SELECT` on these two tables is enough (the demo creates `branch_sales_reader`, [backoffice/postgresql/reader-user.sh](backoffice/postgresql/reader-user.sh)). Its own state is in MongoDB (below). In a real branch the back-office tables already exist. Here they come from `backoffice/<database>/schema.sql`, and confirmation is simulated with SQL:
+The producer writes nothing to the branch database: a login with `SELECT` on these four tables is enough (the demo creates `branch_sales_reader`, [backoffice/postgresql/reader-user.sh](backoffice/postgresql/reader-user.sh)). Its own state is in MongoDB (below). In a real branch the back-office tables already exist. Here they come from `backoffice/<database>/schema.sql`, and confirmation is simulated with SQL:
 
 ```sql
 update daily_sales set status = 'CONFIRMED', revision = revision + 1, confirmed_at = now() where sale_date = '2026-10-01';
@@ -46,7 +48,7 @@ Days and lines are read in one read-only transaction that sees one snapshot, so 
 
 ## Send state (MongoDB)
 
-Collection `sync_state`, one document per `(saleDate, revision)`, id `2026-10-01#1`:
+Collection `sync_state`, one document per `(type, date, revision)`, id `DAILY_SUMMARY#2026-10-01#1` or `DAILY_RETURN#2026-10-01#1` (documents from before returns existed are renamed at start-up):
 
 | Status | Meaning | Sent again? |
 |---|---|---|
@@ -69,8 +71,8 @@ demo-branches/sync-state.sh BR0001 --history   # with every attempt and receipt
 
 ```
 cron (every hour, Asia/Bangkok) ──► random delay 0–30 min ──► round:
-   read CONFIRMED days of the last SEND_LOOKBACK days, oldest first; keep those whose revision needs sending (table above)
-   for each day: map categories → write message → send to the branch broker, wait for ack (acks=all) → SENT
+   read CONFIRMED days of the last SEND_LOOKBACK days, oldest first, sales first and then returns; keep those whose revision needs sending (table above)
+   for each day: map categories → write message → send to the topic of its type at the branch broker, wait for ack (acks=all) → SENT
 ```
 
 | Situation | Result |
@@ -81,7 +83,7 @@ cron (every hour, Asia/Bangkok) ──► random delay 0–30 min ──► roun
 | Manager edits and re-confirms | the new revision is sent; the old revision's document stays |
 | HQ's receipt arrives before `SENT` was written (HQ can answer within milliseconds) | the receipt listener retries for about 10 s, then applies it; after that it is logged and skipped, and the revision is sent again after `SEND_RESEND_AFTER` |
 
-Every day has key `branchCode` and the topic has one partition, so HQ reads a branch's days in order.
+Every day has key `branchCode` and each topic has one partition, so HQ reads a branch's days of one type in order. Sales and returns are two topics, so HQ may read a day's returns before its sales; HQ then answers `PARENT_MISSING` and stores the returns by itself once the sales arrive, with a second receipt. The branch does nothing about it.
 
 ## Branch identity
 
@@ -130,11 +132,11 @@ demo-branches/sync-state.sh BR0001                                  # its send s
 | `branch-db` | `postgres:18.6-alpine` | Simulated back-office; the producer logs in as `branch_sales_reader` (SELECT only) |
 | `mongodb` | `mongo:8.0.16` | `sync_state`; the producer logs in as `branch_sales` (readWrite on `branch_sales`) |
 | `kafka` | `apache/kafka:4.3.1` | Single KRaft node. Listeners: `LOCAL` `kafka:19092` PLAINTEXT (branch network only), `EXTERNAL` `:9094` SASL_SSL (for HQ, through the edge), `CONTROLLER` `:9093`. ACLs on; `User:ANONYMOUS` on `LOCAL` is a super user |
-| `kafka-init` | `apache/kafka:4.3.1` | Creates `branch-sales.daily-summary` and `branch-sales.receipt` (1 partition, 30 days), user `hq` with HQ's password, and its ACLs (read summaries, write receipts, group `hq-branch-sales-consumer`), then exits. Run again after a password change |
+| `kafka-init` | `apache/kafka:4.3.1` | Creates `branch-sales.daily-summary`, `branch-sales.daily-return` and `branch-sales.receipt` (1 partition, 30 days), user `hq` with HQ's password, and its ACLs (read summaries and returns, write receipts, group `hq-branch-sales-consumer`), then exits. Run again after a password change |
 | `edge` | `haproxy:3.2.25-alpine` | Stands in for the branch firewall: the only branch container on `branch-sales-wan`, under the alias `kafka.<branch>.example`, forwarding TCP 9094 to the broker's `EXTERNAL` listener. TLS passes through ([edge/haproxy.cfg](edge/haproxy.cfg)) |
 | `producer` | built from this repo | |
 
-`smoke-test.sh` runs from `wan`, as HQ connects: HQ's user can log in over TLS (host name checked against the HQ CA) and sees the two topics, cannot write the summary topic, a wrong password and a plaintext client are refused, and nothing but the edge's port 9094 is reachable from `wan` (not Kafka's other ports, MongoDB, the database or the producer).
+`smoke-test.sh` runs from `wan`, as HQ connects: HQ's user can log in over TLS (host name checked against the HQ CA) and sees the three topics, cannot write the summary topic, a wrong password and a plaintext client are refused, and nothing but the edge's port 9094 is reachable from `wan` (not Kafka's other ports, MongoDB, the database or the producer).
 
 The full walkthrough with HQ and two branches, including the failure cases, is in the consumer repo: [demo/README.md](https://github.com/mpiumakkho/branch-sales-consumer/blob/main/demo/README.md).
 
@@ -169,8 +171,8 @@ Needs JDK 25 and Docker. Tests start their own Kafka, MongoDB and branch databas
 
 | Test | Checks |
 |---|---|
-| `SummaryMessageWriterTest` | messages are valid against the contract schema; money format, Bangkok time with seconds, category mapping and merging, data rejected before sending |
-| `PostgresSendRoundTest`, `MySqlSendRoundTest`, `SqlServerSendRoundTest` | the same tests ([AbstractSendRoundTest](src/test/java/io/github/mpiumakkho/branchsales/producer/service/AbstractSendRoundTest.java)) on each database: only confirmed revisions are sent, once; `SENT` waits for HQ and becomes `HQ_ACCEPTED` or `HQ_REJECTED` from the receipt; a rejected day is not sent again until re-confirmed, and a later `INSERTED` receipt (HQ replay) accepts it; a `SENT` day without a receipt is sent again after `resend-after`, and either copy's receipt completes it; a receipt that arrives before `SENT` is applied once the offset is known; days outside the lookback are not read; a bad day does not block other days; reading is not blocked by an open back-office transaction; Kafka failure (simulated and with the broker paused) stops the round and the next round sends everything in date order, with the history showing both attempts |
+| `DailyMessageWriterTest` | messages are valid against the contract schema of their type (`saleDate` / `returnDate`); money format, Bangkok time with seconds, category mapping and merging, data rejected before sending |
+| `PostgresSendRoundTest`, `MySqlSendRoundTest`, `SqlServerSendRoundTest` | the same tests ([AbstractSendRoundTest](src/test/java/io/github/mpiumakkho/branchsales/producer/service/AbstractSendRoundTest.java)) on each database: only confirmed revisions are sent, once; `SENT` waits for HQ and becomes `HQ_ACCEPTED` or `HQ_REJECTED` from the receipt; a rejected day is not sent again until re-confirmed, and a later `INSERTED` receipt (HQ replay) accepts it; a `SENT` day without a receipt is sent again after `resend-after`, and either copy's receipt completes it; a receipt that arrives before `SENT` is applied once the offset is known; days outside the lookback are not read; a bad day does not block other days; reading is not blocked by an open back-office transaction; Kafka failure (simulated and with the broker paused) stops the round and the next round sends everything in date order, with the history showing both attempts; returns go to the return topic and their receipts are matched by type (a receipt without type is for the sales); send state from before returns existed is renamed at start-up |
 | `ProducerPropertiesTest` | branch code, category mapping and durations are checked at startup, including retention longer than lookback |
 | `SyncStateCleanupTest` | only accepted days older than the retention are deleted; waiting and rejected days stay |
 | `SendSchedulerTest` | random delay stays between 0 and the maximum |

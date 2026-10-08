@@ -5,6 +5,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -21,17 +22,19 @@ import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 
 import io.github.mpiumakkho.branchsales.producer.config.ProducerProperties;
-import io.github.mpiumakkho.branchsales.producer.dto.ConfirmedSales;
+import io.github.mpiumakkho.branchsales.producer.dto.ConfirmedDay;
+import io.github.mpiumakkho.branchsales.producer.dto.RecordType;
 import io.github.mpiumakkho.branchsales.producer.dto.SyncState;
 import io.github.mpiumakkho.branchsales.producer.exception.InvalidSalesException;
-import io.github.mpiumakkho.branchsales.producer.kafka.SummaryPublisher;
-import io.github.mpiumakkho.branchsales.producer.kafka.SummaryPublisher.PublishException;
-import io.github.mpiumakkho.branchsales.producer.repository.ConfirmedSalesReader;
+import io.github.mpiumakkho.branchsales.producer.kafka.RecordPublisher;
+import io.github.mpiumakkho.branchsales.producer.kafka.RecordPublisher.PublishException;
+import io.github.mpiumakkho.branchsales.producer.repository.ConfirmedDayReader;
 import io.github.mpiumakkho.branchsales.producer.repository.SyncStateStore;
-import io.github.mpiumakkho.branchsales.producer.service.SummaryMessageWriter.Message;
+import io.github.mpiumakkho.branchsales.producer.service.DailyMessageWriter.Message;
 
 /**
- * One send round: every confirmed day (within the lookback) whose current revision still needs sending, oldest first.
+ * One send round: every confirmed day of every record type (within the lookback) whose current revision still needs
+ * sending, oldest first. Daily sales go before daily returns, since HQ stores a day's returns only after its sales.
  * A revision needs sending when it was never sent, its last attempt FAILED, or it was SENT but HQ has not sent a
  * receipt within {@code resend-after} (e.g. the branch broker lost the message). HQ_ACCEPTED and HQ_REJECTED are final.
  * <ul>
@@ -47,9 +50,9 @@ public class SendRound {
 	private static final Logger log = LoggerFactory.getLogger(SendRound.class);
 	private static final ZoneId BANGKOK = ZoneId.of("Asia/Bangkok");
 
-	private final ConfirmedSalesReader reader;
-	private final SummaryMessageWriter writer;
-	private final SummaryPublisher publisher;
+	private final ConfirmedDayReader reader;
+	private final DailyMessageWriter writer;
+	private final RecordPublisher publisher;
 	private final SyncStateStore states;
 	private final Clock clock;
 	private final Duration lookback;
@@ -59,7 +62,7 @@ public class SendRound {
 	private final Counter failedCounter;
 	private volatile @Nullable Instant lastRoundAt;
 
-	public SendRound(ConfirmedSalesReader reader, SummaryMessageWriter writer, SummaryPublisher publisher,
+	public SendRound(ConfirmedDayReader reader, DailyMessageWriter writer, RecordPublisher publisher,
 			SyncStateStore states, Clock clock, ProducerProperties properties, MeterRegistry meters) {
 		this.reader = reader;
 		this.writer = writer;
@@ -100,34 +103,37 @@ public class SendRound {
 	}
 
 	private Result sendPending() {
-		List<ConfirmedSales> pending = pending();
+		List<ConfirmedDay> pending = new ArrayList<>();
+		for (RecordType type : RecordType.values()) {
+			pending.addAll(pending(type));
+		}
 		int sent = 0;
 		int failed = 0;
-		for (ConfirmedSales sales : pending) {
+		for (ConfirmedDay day : pending) {
 			Message message;
 			try {
-				message = writer.write(sales);
+				message = writer.write(day);
 			}
 			catch (InvalidSalesException e) {
-				log.warn("Not sent {} revision {}: {}", sales.saleDate(), sales.revision(), e.getMessage());
-				states.markFailed(sales.saleDate(), sales.revision(), e.getMessage(), null);
+				log.warn("Not sent {} {} revision {}: {}", day.type(), day.date(), day.revision(), e.getMessage());
+				states.markFailed(day.type(), day.date(), day.revision(), e.getMessage(), null);
 				failed++;
 				continue;
 			}
 			long offset;
 			try {
-				offset = publisher.publish(message);
+				offset = publisher.publish(day.type(), message);
 			}
 			catch (PublishException e) {
-				log.warn("Send failed for {} revision {}, stopping this round ({} days left pending): {}",
-						sales.saleDate(), sales.revision(), pending.size() - sent - failed - 1, e.getMessage());
-				states.markFailed(sales.saleDate(), sales.revision(), e.getMessage(), message.eventId());
+				log.warn("Send failed for {} {} revision {}, stopping this round ({} days left pending): {}",
+						day.type(), day.date(), day.revision(), pending.size() - sent - failed - 1, e.getMessage());
+				states.markFailed(day.type(), day.date(), day.revision(), e.getMessage(), message.eventId());
 				failed++;
 				break;
 			}
-			states.markSent(sales.saleDate(), sales.revision(), message.eventId(), offset);
-			log.info("Sent {} revision {} eventId {} offset {}", sales.saleDate(), sales.revision(), message.eventId(),
-					offset);
+			states.markSent(day.type(), day.date(), day.revision(), message.eventId(), offset);
+			log.info("Sent {} {} revision {} eventId {} offset {}", day.type(), day.date(), day.revision(),
+					message.eventId(), offset);
 			sent++;
 		}
 		Result result = new Result(pending.size(), sent, failed);
@@ -138,14 +144,14 @@ public class SendRound {
 		return result;
 	}
 
-	private List<ConfirmedSales> pending() {
+	private List<ConfirmedDay> pending(RecordType type) {
 		LocalDate since = LocalDate.now(clock.withZone(BANGKOK)).minusDays(lookback.toDays());
-		List<ConfirmedSales> confirmed = reader.readConfirmed(since);
+		List<ConfirmedDay> confirmed = reader.readConfirmed(type, since);
 		Map<String, SyncState> known = states.find(
-				confirmed.stream().map(c -> SyncState.id(c.saleDate(), c.revision())).toList());
+				confirmed.stream().map(c -> SyncState.id(type, c.date(), c.revision())).toList());
 		Instant resendBefore = clock.instant().minus(resendAfter);
 		return confirmed.stream()
-				.filter(c -> needsSending(known.get(SyncState.id(c.saleDate(), c.revision())), resendBefore))
+				.filter(c -> needsSending(known.get(SyncState.id(type, c.date(), c.revision())), resendBefore))
 				.toList();
 	}
 

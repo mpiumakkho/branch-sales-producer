@@ -17,11 +17,12 @@ import tools.jackson.databind.json.JsonMapper;
 
 import io.github.mpiumakkho.branchsales.producer.ContractSchema;
 import io.github.mpiumakkho.branchsales.producer.config.ProducerProperties;
-import io.github.mpiumakkho.branchsales.producer.dto.ConfirmedSales;
-import io.github.mpiumakkho.branchsales.producer.dto.ConfirmedSales.Line;
+import io.github.mpiumakkho.branchsales.producer.dto.ConfirmedDay;
+import io.github.mpiumakkho.branchsales.producer.dto.ConfirmedDay.Line;
+import io.github.mpiumakkho.branchsales.producer.dto.RecordType;
 import io.github.mpiumakkho.branchsales.producer.exception.InvalidSalesException;
 
-class SummaryMessageWriterTest {
+class DailyMessageWriterTest {
 
 	private static final Map<String, String> MAPPING = Map.of(
 			"BEV", "BEVERAGE",
@@ -29,8 +30,8 @@ class SummaryMessageWriterTest {
 			"SNK", "SNACK",
 			"RTE", "READY_MEAL");
 
-	private final SummaryMessageWriter writer = new SummaryMessageWriter(
-			new ProducerProperties("BR0001", "branch-sales.daily-summary", "branch-sales.receipt", MAPPING,
+	private final DailyMessageWriter writer = new DailyMessageWriter(
+			new ProducerProperties("BR0001", "branch-sales.daily-summary", "branch-sales.daily-return", "branch-sales.receipt", MAPPING,
 					new ProducerProperties.Schedule("-", Duration.ZERO, "-"), Duration.ofSeconds(1), Duration.ofDays(60),
 					Duration.ofHours(24), Duration.ofDays(90)));
 
@@ -64,7 +65,7 @@ class SummaryMessageWriterTest {
 	@Test
 	void writesConfirmedAtInBangkokTimeWithSeconds() {
 		// 14:45:00 UTC = 21:45:00 in Bangkok; seconds must be present for RFC 3339
-		var message = writer.write(new ConfirmedSales("BR0001", LocalDate.of(2026, 10, 1), 1,
+		var message = writer.write(new ConfirmedDay(RecordType.DAILY_SUMMARY, "BR0001", LocalDate.of(2026, 10, 1), 1,
 				OffsetDateTime.parse("2026-10-01T14:45:00Z"), List.of(new Line("BEV", BigDecimal.TEN, 1))));
 
 		assertThat(mapper.readTree(message.value()).get("confirmedAt").asString()).isEqualTo("2026-10-01T21:45:00+07:00");
@@ -117,24 +118,37 @@ class SummaryMessageWriterTest {
 		assertInvalid(sales(new Line("BEV", new BigDecimal("-1.00"), 1)), "negative amount for category BEV");
 		assertInvalid(sales(new Line("BEV", BigDecimal.ONE, -1)), "negative quantity for category BEV");
 		assertInvalid(sales(new Line("BEV", new BigDecimal("1.005"), 1)), "amount with more than 2 decimals for category BEV");
-		assertInvalid(new ConfirmedSales("BR0001", LocalDate.of(2026, 10, 1), 1, null,
+		assertInvalid(new ConfirmedDay(RecordType.DAILY_SUMMARY, "BR0001", LocalDate.of(2026, 10, 1), 1, null,
 				List.of(new Line("BEV", BigDecimal.ONE, 1))), "confirmed day has no confirmed_at");
 	}
 
 	@Test
 	void rejectsDayOfAnotherBranch() {
 		// e.g. the back-office database was copied from another branch
-		assertInvalid(new ConfirmedSales("BR0009", LocalDate.of(2026, 10, 1), 1,
+		assertInvalid(new ConfirmedDay(RecordType.DAILY_SUMMARY, "BR0009", LocalDate.of(2026, 10, 1), 1,
 				OffsetDateTime.parse("2026-10-01T21:45:00+07:00"), List.of(new Line("BEV", BigDecimal.ONE, 1))),
 				"daily_sales.branch_code 'BR0009' does not match configured branch code BR0001");
 	}
 
-	private void assertInvalid(ConfirmedSales sales, String message) {
+	private void assertInvalid(ConfirmedDay sales, String message) {
 		assertThatThrownBy(() -> writer.write(sales)).isInstanceOf(InvalidSalesException.class).hasMessage(message);
 	}
 
-	private static ConfirmedSales sales(Line... lines) {
-		return new ConfirmedSales("BR0001", LocalDate.of(2026, 10, 1), 2,
+	@Test
+	void writesReturnMessageWithReturnDate() {
+		var message = writer.write(new ConfirmedDay(RecordType.DAILY_RETURN, "BR0001", LocalDate.of(2026, 10, 1), 1,
+				OffsetDateTime.parse("2026-10-01T21:50:00+07:00"), List.of(new Line("BEV", new BigDecimal("120.00"), 3))));
+
+		assertThat(ContractSchema.returnErrors(message.value())).isEmpty();
+		assertThat(ContractSchema.errors(message.value())).isNotEmpty(); // not a valid summary: no saleDate
+		JsonNode json = mapper.readTree(message.value());
+		assertThat(json.get("returnDate").asString()).isEqualTo("2026-10-01");
+		assertThat(json.has("saleDate")).isFalse();
+		assertThat(json.get("totalAmount").asString()).isEqualTo("120.00");
+	}
+
+	private static ConfirmedDay sales(Line... lines) {
+		return new ConfirmedDay(RecordType.DAILY_SUMMARY, "BR0001", LocalDate.of(2026, 10, 1), 2,
 				OffsetDateTime.parse("2026-10-01T21:45:00+07:00"), List.of(lines));
 	}
 }

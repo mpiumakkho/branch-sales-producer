@@ -116,14 +116,14 @@ services:
         B="--bootstrap-server kafka:19092"
         K=/opt/kafka/bin
         # One partition each (order of revisions); 30 days, since HQ may not read for days
-        for t in branch-sales.daily-summary branch-sales.receipt; do
+        for t in branch-sales.daily-summary branch-sales.daily-return branch-sales.receipt; do
           $$K/kafka-topics.sh $$B --create --if-not-exists --topic $$t --partitions 1 --replication-factor 1 \
             --config retention.ms=2592000000
         done
         $$K/kafka-configs.sh $$B --alter --entity-type users --entity-name hq \
           --add-config "SCRAM-SHA-512=[iterations=8192,password=$$HQ_KAFKA_PASSWORD]" > /dev/null
         $$K/kafka-acls.sh $$B --add --allow-principal User:hq --operation Read --operation Describe \
-          --topic branch-sales.daily-summary > /dev/null
+          --topic branch-sales.daily-summary --topic branch-sales.daily-return > /dev/null
         $$K/kafka-acls.sh $$B --add --allow-principal User:hq --operation Write --operation Describe \
           --topic branch-sales.receipt > /dev/null
         $$K/kafka-acls.sh $$B --add --allow-principal User:hq --operation Read --group hq-branch-sales-consumer > /dev/null

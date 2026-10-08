@@ -6,11 +6,12 @@ import java.time.LocalDate;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Send state of one (saleDate, revision), one MongoDB document in {@code sync_state} (requirements §6).
+ * Send state of one (type, date, revision), one MongoDB document in {@code sync_state} (requirements §6).
  *
  * @param sentAt when the last message for this revision was acknowledged by the branch broker, if ever
  */
-public record SyncState(LocalDate saleDate, int revision, Status status, int attempts, @Nullable Instant sentAt) {
+public record SyncState(RecordType type, LocalDate date, int revision, Status status, int attempts,
+		@Nullable Instant sentAt) {
 
 	public enum Status {
 		/** The branch broker acknowledged a message; no HQ receipt yet. */
@@ -23,8 +24,8 @@ public record SyncState(LocalDate saleDate, int revision, Status status, int att
 		HQ_REJECTED
 	}
 
-	/** Document id: one per (saleDate, revision). */
-	public static String id(LocalDate saleDate, int revision) {
-		return saleDate + "#" + revision;
+	/** Document id: one per (type, date, revision), e.g. {@code DAILY_SUMMARY#2026-10-01#1}. */
+	public static String id(RecordType type, LocalDate date, int revision) {
+		return type + "#" + date + "#" + revision;
 	}
 }

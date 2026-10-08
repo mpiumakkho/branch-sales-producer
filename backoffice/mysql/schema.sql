@@ -18,3 +18,20 @@ create table daily_sales_line (
     primary key (sale_date, category_code),
     foreign key (sale_date) references daily_sales (sale_date)
 );
+
+create table daily_return (
+    return_date  date          primary key,
+    branch_code  varchar(10)   not null,
+    status       varchar(10)   not null check (status in ('DRAFT', 'CONFIRMED')),
+    revision     int           not null default 0,
+    confirmed_at datetime(6)
+);
+
+create table daily_return_line (
+    return_date   date          not null,
+    category_code varchar(20)   not null,
+    amount        decimal(12,2) not null,
+    quantity      int           not null,
+    primary key (return_date, category_code),
+    foreign key (return_date) references daily_return (return_date)
+);

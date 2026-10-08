@@ -48,8 +48,9 @@ management:
 branch-sales:
   # This branch's code in the HQ branch registry. Required; the producer does not start without it.
   branch-code: ${BRANCH_CODE:}
-  # Both topics are in the branch's own Kafka (contract/README.md in the consumer repo)
+  # All topics are in the branch's own Kafka (contract/README.md in the consumer repo): one per record type, plus receipts
   topic: branch-sales.daily-summary
+  return-topic: branch-sales.daily-return
   receipt-topic: branch-sales.receipt
   receipt-group: branch-sales-producer
   send-timeout: 40s

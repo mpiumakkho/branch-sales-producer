@@ -18,6 +18,7 @@ import com.networknt.schema.SpecificationVersion;
 public final class ContractSchema {
 
 	private static final Schema SUMMARY = load("/contract/daily-sales-summary.v1.schema.json");
+	private static final Schema RETURN = load("/contract/daily-return.v1.schema.json");
 	private static final Schema RECEIPT = load("/contract/daily-sales-receipt.v1.schema.json");
 
 	private ContractSchema() {
@@ -26,6 +27,11 @@ public final class ContractSchema {
 	/** @return schema errors of a summary message, empty if it is valid */
 	public static List<String> errors(byte[] message) {
 		return errors(SUMMARY, message);
+	}
+
+	/** @return schema errors of a return message, empty if it is valid */
+	public static List<String> returnErrors(byte[] message) {
+		return errors(RETURN, message);
 	}
 
 	/** @return schema errors of a receipt, empty if it is valid */

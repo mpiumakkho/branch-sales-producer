@@ -49,9 +49,10 @@ import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
 
 import io.github.mpiumakkho.branchsales.producer.ContractSchema;
-import io.github.mpiumakkho.branchsales.producer.dto.ConfirmedSales;
-import io.github.mpiumakkho.branchsales.producer.kafka.SummaryPublisher;
-import io.github.mpiumakkho.branchsales.producer.repository.ConfirmedSalesReader;
+import io.github.mpiumakkho.branchsales.producer.dto.ConfirmedDay;
+import io.github.mpiumakkho.branchsales.producer.dto.RecordType;
+import io.github.mpiumakkho.branchsales.producer.kafka.RecordPublisher;
+import io.github.mpiumakkho.branchsales.producer.repository.ConfirmedDayReader;
 import io.github.mpiumakkho.branchsales.producer.repository.SyncStateStore;
 
 /**
@@ -79,7 +80,7 @@ abstract class AbstractSendRoundTest {
 	SendRound round;
 
 	@Autowired
-	ConfirmedSalesReader reader;
+	ConfirmedDayReader reader;
 
 	@Autowired
 	SyncStateStore states;
@@ -88,7 +89,7 @@ abstract class AbstractSendRoundTest {
 	DataSource dataSource;
 
 	@MockitoSpyBean
-	SummaryPublisher publisher;
+	RecordPublisher publisher;
 
 	@Autowired
 	JdbcClient jdbc;
@@ -107,6 +108,9 @@ abstract class AbstractSendRoundTest {
 	@Value("${branch-sales.topic}")
 	String topic;
 
+	@Value("${branch-sales.return-topic}")
+	String returnTopic;
+
 	@Value("${branch-sales.receipt-topic}")
 	String receiptTopic;
 
@@ -118,12 +122,15 @@ abstract class AbstractSendRoundTest {
 		mongo.remove(new Query(), "sync_state");
 		jdbc.sql("delete from daily_sales_line").update();
 		jdbc.sql("delete from daily_sales").update();
+		jdbc.sql("delete from daily_return_line").update();
+		jdbc.sql("delete from daily_return").update();
 		topicReader = openTopicReaderAtEnd();
 	}
 
 	@AfterEach
 	void tearDown() {
 		topicReader.close();
+		otherTopic.clear();
 	}
 
 	@Test
@@ -215,7 +222,7 @@ abstract class AbstractSendRoundTest {
 		catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
 		}
-		states.markSent(DAY_1, 1, UUID.randomUUID(), 42);
+		states.markSent(RecordType.DAILY_SUMMARY, DAY_1, 1, UUID.randomUUID(), 42);
 		await().atMost(TIMEOUT).until(() -> "HQ_ACCEPTED".equals(state(DAY_1, 1).getString("status")));
 	}
 
@@ -286,9 +293,10 @@ abstract class AbstractSendRoundTest {
 			try {
 				// Reads the last committed state from its snapshot instead of waiting for the lock (on SQL Server
 				// only with SNAPSHOT isolation; its REPEATABLE READ would wait here)
-				List<ConfirmedSales> confirmed = CompletableFuture.supplyAsync(() -> reader.readConfirmed(DAY_1))
+				List<ConfirmedDay> confirmed = CompletableFuture
+						.supplyAsync(() -> reader.readConfirmed(RecordType.DAILY_SUMMARY, DAY_1))
 						.get(5, TimeUnit.SECONDS);
-				assertThat(confirmed).extracting(ConfirmedSales::saleDate).containsExactly(DAY_1);
+				assertThat(confirmed).extracting(ConfirmedDay::date).containsExactly(DAY_1);
 			}
 			finally {
 				backOffice.rollback();
@@ -311,9 +319,9 @@ abstract class AbstractSendRoundTest {
 	void kafkaFailureStopsTheRoundAndTheNextRoundSendsEverything() {
 		insertDay(DAY_1, "CONFIRMED", 1);
 		insertDay(DAY_2, "CONFIRMED", 1);
-		doThrow(new SummaryPublisher.PublishException(new RuntimeException("simulated: broker not reachable")))
+		doThrow(new RecordPublisher.PublishException(new RuntimeException("simulated: broker not reachable")))
 				.doCallRealMethod()
-				.when(publisher).publish(any());
+				.when(publisher).publish(any(), any());
 
 		assertThat(round.run()).isEqualTo(new SendRound.Result(2, 0, 1));
 		assertThat(state(DAY_1, 1)).containsEntry("status", "FAILED")
@@ -351,6 +359,49 @@ abstract class AbstractSendRoundTest {
 		assertThat(round.run()).isEqualTo(new SendRound.Result(1, 1, 0));
 	}
 
+	@Test
+	void sendsConfirmedReturnsToTheReturnTopicAndMatchesTheirReceiptsByType() {
+		insertDay(DAY_1, "CONFIRMED", 1);
+		jdbc.sql("insert into daily_return values (?, 'BR0001', 'CONFIRMED', 1, ?)").params(DAY_1, CONFIRMED_AT).update();
+		jdbc.sql("insert into daily_return_line values (?, 'BEV', 120.00, 3)").param(DAY_1).update();
+
+		// Sales first, then returns, so HQ can store the returns right away
+		assertThat(round.run()).isEqualTo(new SendRound.Result(2, 2, 0));
+		ConsumerRecord<String, byte[]> sales = readMessages(1).getFirst();
+		ConsumerRecord<String, byte[]> returns = readReturnMessages(1).getFirst();
+		assertThat(ContractSchema.returnErrors(returns.value())).isEmpty();
+		JsonNode json = mapper.readTree(returns.value());
+		assertThat(json.get("returnDate").asString()).isEqualTo(DAY_1.toString());
+		assertThat(json.has("saleDate")).isFalse();
+		assertThat(json.get("totalAmount").asString()).isEqualTo("120.00");
+		assertThat(returnState(DAY_1, 1)).containsEntry("status", "SENT").containsEntry("type", "DAILY_RETURN");
+
+		// Offsets are per topic, so the same number can name a sales record and a return: the receipt's type tells
+		// them apart
+		sendReceipt(RecordType.DAILY_RETURN, returns.offset(), "INSERTED", null);
+		await().atMost(TIMEOUT).until(() -> "HQ_ACCEPTED".equals(returnState(DAY_1, 1).getString("status")));
+		assertThat(state(DAY_1, 1)).containsEntry("status", "SENT");
+		// A receipt without type is for the daily sales, as HQ wrote them before returns existed
+		sendReceipt(sales.offset(), "INSERTED", null);
+		await().atMost(TIMEOUT).until(() -> "HQ_ACCEPTED".equals(state(DAY_1, 1).getString("status")));
+		assertThat(round.run()).isEqualTo(new SendRound.Result(0, 0, 0));
+	}
+
+	@Test
+	void renamesSendStateWrittenBeforeReturnsExisted() {
+		// A document from an older producer: id without type, field saleDate
+		mongo.insert(new Document("_id", DAY_1 + "#1").append("saleDate", DAY_1.toString()).append("revision", 1)
+				.append("status", "HQ_ACCEPTED").append("attempts", 1).append("sentOffsets", List.of(7L)), "sync_state");
+
+		new SyncStateStore(mongo, java.time.Clock.systemUTC()); // what start-up does
+
+		assertThat(mongo.findOne(byId(DAY_1, 1), Document.class, "sync_state")).containsEntry("type", "DAILY_SUMMARY")
+				.containsEntry("status", "HQ_ACCEPTED");
+		assertThat(mongo.findById(DAY_1 + "#1", Document.class, "sync_state")).isNull();
+		insertDay(DAY_1, "CONFIRMED", 1);
+		assertThat(round.run().pending()).isZero(); // still known as accepted
+	}
+
 	/** BEV 18200.00 x 410, SNK 12050.00 x 395 */
 	private void insertDay(LocalDate day, String status, int revision) {
 		jdbc.sql("insert into daily_sales values (?, 'BR0001', ?, ?, ?)")
@@ -367,10 +418,18 @@ abstract class AbstractSendRoundTest {
 				.update();
 	}
 
-	/** A receipt as HQ writes it (checked against the receipt schema copy). */
+	/** A receipt for a daily summary as HQ writes it (checked against the receipt schema copy). */
 	private void sendReceipt(long sourceOffset, String outcome, String rejectReason) {
+		sendReceipt(null, sourceOffset, outcome, rejectReason);
+	}
+
+	/** @param type the receipt's type field, or null to leave it out as receipts written before returns existed */
+	private void sendReceipt(RecordType type, long sourceOffset, String outcome, String rejectReason) {
 		ObjectNode receipt = mapper.createObjectNode();
 		receipt.put("schemaVersion", 1);
+		if (type != null) {
+			receipt.put("type", type.name());
+		}
 		receipt.put("branchCode", "BR0001");
 		receipt.put("sourceOffset", sourceOffset);
 		receipt.put("outcome", outcome);
@@ -391,11 +450,19 @@ abstract class AbstractSendRoundTest {
 	}
 
 	private static Query byId(LocalDate day, int revision) {
-		return Query.query(Criteria.where("_id").is(day + "#" + revision));
+		return byId(RecordType.DAILY_SUMMARY, day, revision);
+	}
+
+	private static Query byId(RecordType type, LocalDate day, int revision) {
+		return Query.query(Criteria.where("_id").is(type + "#" + day + "#" + revision));
 	}
 
 	private Document state(LocalDate day, int revision) {
 		return mongo.findOne(byId(day, revision), Document.class, "sync_state");
+	}
+
+	private Document returnState(LocalDate day, int revision) {
+		return mongo.findOne(byId(RecordType.DAILY_RETURN, day, revision), Document.class, "sync_state");
 	}
 
 	/** History events in order: "FAILED error=..." for failed attempts, "RESULT offset=..." for the others. */
@@ -414,20 +481,34 @@ abstract class AbstractSendRoundTest {
 				ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaContainer.getBootstrapServers(),
 				ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false),
 				new StringDeserializer(), new ByteArrayDeserializer());
-		List<TopicPartition> partitions = List.of(new TopicPartition(topic, 0));
+		List<TopicPartition> partitions = List.of(new TopicPartition(topic, 0), new TopicPartition(returnTopic, 0));
 		reader.assign(partitions);
 		reader.seekToEnd(partitions);
 		partitions.forEach(reader::position); // resolve end offsets before the test sends anything
 		return reader;
 	}
 
+	/** Exactly {@code count} new messages on the summary topic. */
 	private List<ConsumerRecord<String, byte[]>> readMessages(int count) {
+		return readMessages(topic, count);
+	}
+
+	/** Exactly {@code count} new messages on the return topic. */
+	private List<ConsumerRecord<String, byte[]>> readReturnMessages(int count) {
+		return readMessages(returnTopic, count);
+	}
+
+	// The reader is assigned both topics; messages of the other topic are kept for the next call
+	private final List<ConsumerRecord<String, byte[]>> otherTopic = new ArrayList<>();
+
+	private List<ConsumerRecord<String, byte[]>> readMessages(String wanted, int count) {
 		List<ConsumerRecord<String, byte[]>> records = new ArrayList<>();
+		otherTopic.removeIf(r -> r.topic().equals(wanted) && records.add(r));
 		long deadline = System.nanoTime() + TIMEOUT.toNanos();
 		while (records.size() < count && System.nanoTime() < deadline) {
-			topicReader.poll(Duration.ofMillis(500)).forEach(records::add);
+			topicReader.poll(Duration.ofMillis(500)).forEach(r -> (r.topic().equals(wanted) ? records : otherTopic).add(r));
 		}
-		assertThat(records).as("messages on %s", topic).hasSize(count);
+		assertThat(records).as("messages on %s", wanted).hasSize(count);
 		return records;
 	}
 }

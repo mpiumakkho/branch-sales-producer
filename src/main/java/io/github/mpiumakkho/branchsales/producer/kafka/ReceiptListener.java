@@ -11,6 +11,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 import io.github.mpiumakkho.branchsales.producer.config.ProducerProperties;
 import io.github.mpiumakkho.branchsales.producer.dto.HqReceipt;
+import io.github.mpiumakkho.branchsales.producer.dto.RecordType;
 import io.github.mpiumakkho.branchsales.producer.repository.SyncStateStore;
 
 /**
@@ -65,7 +66,10 @@ public class ReceiptListener {
 		JsonNode root = mapper.readTree(value);
 		String outcome = required(root, "outcome").asString();
 		boolean rejected = "REJECTED".equals(outcome);
+		// Receipts written before the return topic existed have no type: they are for daily sales
+		JsonNode type = root.get("type");
 		return new HqReceipt(
+				type == null || type.isNull() ? RecordType.DAILY_SUMMARY : RecordType.valueOf(type.asString()),
 				required(root, "branchCode").asString(),
 				required(root, "sourceOffset").asLong(),
 				outcome,
@@ -85,7 +89,8 @@ public class ReceiptListener {
 	static class UnmatchedReceiptException extends RuntimeException {
 
 		UnmatchedReceiptException(HqReceipt receipt) {
-			super("no revision was sent at offset " + receipt.sourceOffset() + " (HQ outcome " + receipt.outcome() + ")");
+			super("no " + receipt.type() + " revision was sent at offset " + receipt.sourceOffset() + " (HQ outcome "
+					+ receipt.outcome() + ")");
 		}
 	}
 }

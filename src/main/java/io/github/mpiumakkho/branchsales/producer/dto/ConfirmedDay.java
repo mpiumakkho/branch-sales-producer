@@ -6,16 +6,19 @@ import java.time.OffsetDateTime;
 import java.util.List;
 
 /**
- * One confirmed day as stored in the back-office, with its local category codes.
+ * One confirmed business day of one record type as stored in the back-office, with its local category codes.
+ *
+ * @param date the business date: {@code sale_date} of the sales, {@code return_date} of the returns
  */
-public record ConfirmedSales(
+public record ConfirmedDay(
+		RecordType type,
 		String branchCode,
-		LocalDate saleDate,
+		LocalDate date,
 		int revision,
 		OffsetDateTime confirmedAt,
 		List<Line> lines) {
 
-	public ConfirmedSales {
+	public ConfirmedDay {
 		lines = List.copyOf(lines);
 	}
 

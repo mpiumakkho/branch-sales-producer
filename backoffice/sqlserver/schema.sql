@@ -23,3 +23,19 @@ create table daily_sales_line (
     quantity      int           not null,
     primary key (sale_date, category_code)
 );
+
+create table daily_return (
+    return_date  date              primary key,
+    branch_code  varchar(10)       not null,
+    status       varchar(10)       not null check (status in ('DRAFT', 'CONFIRMED')),
+    revision     int               not null default 0,
+    confirmed_at datetimeoffset(6)
+);
+
+create table daily_return_line (
+    return_date   date          not null references daily_return (return_date),
+    category_code varchar(20)   not null,
+    amount        decimal(12,2) not null,
+    quantity      int           not null,
+    primary key (return_date, category_code)
+);

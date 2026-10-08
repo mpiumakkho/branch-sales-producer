@@ -20,3 +20,20 @@ create table daily_sales_line (
     quantity      integer       not null,
     primary key (sale_date, category_code)
 );
+
+-- Returns and voids of one business day, entered and confirmed like the sales. HQ stores them after that day's sales.
+create table daily_return (
+    return_date  date        primary key,
+    branch_code  varchar(10) not null,
+    status       varchar(10) not null check (status in ('DRAFT', 'CONFIRMED')),
+    revision     integer     not null default 0,
+    confirmed_at timestamptz
+);
+
+create table daily_return_line (
+    return_date   date          not null references daily_return (return_date),
+    category_code varchar(20)   not null,
+    amount        numeric(12,2) not null,
+    quantity      integer       not null,
+    primary key (return_date, category_code)
+);

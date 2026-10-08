@@ -51,14 +51,14 @@ class ProducerPropertiesTest {
 
 	@Test
 	void rejectsRetentionNotLongerThanLookback() {
-		assertThatThrownBy(() -> new ProducerProperties("BR0001", "branch-sales.daily-summary", "branch-sales.receipt",
+		assertThatThrownBy(() -> new ProducerProperties("BR0001", "branch-sales.daily-summary", "branch-sales.daily-return", "branch-sales.receipt",
 				Map.of(), SCHEDULE, Duration.ofSeconds(1), Duration.ofDays(60), Duration.ofHours(24), Duration.ofDays(60)))
 				.hasMessage("branch-sales.retention (PT1440H) must be longer than branch-sales.lookback (PT1440H)");
 	}
 
 	private static ProducerProperties properties(String branchCode, Map<String, String> mapping, Duration lookback,
 			Duration resendAfter) {
-		return new ProducerProperties(branchCode, "branch-sales.daily-summary", "branch-sales.receipt", mapping,
+		return new ProducerProperties(branchCode, "branch-sales.daily-summary", "branch-sales.daily-return", "branch-sales.receipt", mapping,
 				SCHEDULE, Duration.ofSeconds(1), lookback, resendAfter, Duration.ofDays(90));
 	}
 }

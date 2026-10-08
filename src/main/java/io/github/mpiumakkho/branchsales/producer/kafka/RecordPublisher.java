@@ -11,32 +11,33 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 
 import io.github.mpiumakkho.branchsales.producer.config.ProducerProperties;
-import io.github.mpiumakkho.branchsales.producer.service.SummaryMessageWriter.Message;
+import io.github.mpiumakkho.branchsales.producer.dto.RecordType;
+import io.github.mpiumakkho.branchsales.producer.service.DailyMessageWriter.Message;
 
 /**
- * Sends one message to the branch's own Kafka broker and waits for the ack ({@code acks=all}).
+ * Sends one message to the topic of its type in the branch's own Kafka broker and waits for the ack ({@code acks=all}).
  */
 @Component
-public class SummaryPublisher {
+public class RecordPublisher {
 
 	private final KafkaTemplate<String, byte[]> template;
-	private final String topic;
+	private final ProducerProperties properties;
 	private final Duration sendTimeout;
 
-	public SummaryPublisher(KafkaTemplate<String, byte[]> template, ProducerProperties properties) {
+	public RecordPublisher(KafkaTemplate<String, byte[]> template, ProducerProperties properties) {
 		this.template = template;
-		this.topic = properties.topic();
+		this.properties = properties;
 		this.sendTimeout = properties.sendTimeout();
 	}
 
 	/**
 	 * Returns only after the broker acknowledged the message.
-	 * @return the message's offset in the summary topic; HQ's receipt refers to it
+	 * @return the message's offset in the topic of its type; HQ's receipt refers to it
 	 * @throws PublishException if the message was not acknowledged; it may still have been written (at-least-once)
 	 */
-	public long publish(Message message) {
+	public long publish(RecordType type, Message message) {
 		try {
-			return template.send(topic, message.key(), message.value())
+			return template.send(properties.topicOf(type), message.key(), message.value())
 					.get(sendTimeout.toMillis(), TimeUnit.MILLISECONDS)
 					.getRecordMetadata().offset();
 		}

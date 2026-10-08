@@ -15,6 +15,8 @@ import java.util.UUID;
 
 import org.bson.Document;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.MongoTemplate;
@@ -24,18 +26,16 @@ import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.stereotype.Repository;
 
 import io.github.mpiumakkho.branchsales.producer.dto.HqReceipt;
+import io.github.mpiumakkho.branchsales.producer.dto.RecordType;
 import io.github.mpiumakkho.branchsales.producer.dto.SyncState;
 import io.github.mpiumakkho.branchsales.producer.dto.SyncState.Status;
 
 /**
- * Send state in the branch's MongoDB, collection {@code sync_state}: one document per (saleDate, revision) with the
- * current status and the last {@value #HISTORY_SIZE} events (send attempts and HQ receipts).
+ * Send state in the branch's MongoDB, collection {@code sync_state}: one document per (type, date, revision), id
+ * {@link SyncState#id}. Every change is one update of one document, so it is atomic without transactions, and is
+ * written as soon as it happens (requirements §6, §16).
  * <p>
- * Every change is one update of one document, which MongoDB applies atomically, so status and history always agree
- * without a transaction (no replica set needed). Each change is written as soon as it happens; nothing is buffered.
- * <p>
- * HQ_ACCEPTED is final: a later send attempt or a REJECTED receipt for another copy of the message is recorded in the
- * history but does not change the status.
+ * Receipts are matched by (type, offset): offsets are per topic, and each type has its own topic.
  */
 @Repository
 public class SyncStateStore {
@@ -44,6 +44,7 @@ public class SyncStateStore {
 	static final int HISTORY_SIZE = 50;
 	static final int MAX_ERROR_LENGTH = 1000;
 
+	private static final Logger log = LoggerFactory.getLogger(SyncStateStore.class);
 	private static final List<String> FINAL = List.of(Status.HQ_ACCEPTED.name(), Status.HQ_REJECTED.name());
 
 	private final MongoTemplate mongo;
@@ -52,11 +53,41 @@ public class SyncStateStore {
 	public SyncStateStore(MongoTemplate mongo, Clock clock) {
 		this.mongo = mongo;
 		this.clock = clock;
-		// Receipts are matched by the offsets the revision was sent at
-		mongo.indexOps(COLLECTION).createIndex(new Index("sentOffsets", Sort.Direction.ASC));
+		// Receipts are matched by the offsets the revision was sent at, within its type
+		mongo.indexOps(COLLECTION).createIndex(new Index("type", Sort.Direction.ASC).on("sentOffsets", Sort.Direction.ASC));
 		mongo.indexOps(COLLECTION).createIndex(new Index("status", Sort.Direction.ASC));
 		// Clean-up of accepted days by their last change
 		mongo.indexOps(COLLECTION).createIndex(new Index("updatedAt", Sort.Direction.ASC));
+		migrateLegacyIds();
+	}
+
+	/**
+	 * Documents written before the return topic existed have id {@code date#revision}, field {@code saleDate} and no
+	 * type: they are daily sales. Renamed once, at start-up, to the current id and fields; a document that already has
+	 * the new id is left alone.
+	 */
+	private void migrateLegacyIds() {
+		int migrated = 0;
+		for (Document doc : mongo.find(query(where("_id").regex("^\\d{4}-\\d{2}-\\d{2}#\\d+$")), Document.class, COLLECTION)) {
+			String legacyId = doc.getString("_id");
+			doc.put("_id", RecordType.DAILY_SUMMARY + "#" + legacyId);
+			doc.put("type", RecordType.DAILY_SUMMARY.name());
+			Object saleDate = doc.remove("saleDate");
+			if (saleDate != null) {
+				doc.put("date", saleDate);
+			}
+			try {
+				mongo.insert(doc, COLLECTION);
+			}
+			catch (DuplicateKeyException e) {
+				// Already migrated by a previous start that stopped before the delete
+			}
+			mongo.remove(query(where("_id").is(legacyId)), COLLECTION);
+			migrated++;
+		}
+		if (migrated > 0) {
+			log.info("Renamed {} sync_state documents to the id with the record type", migrated);
+		}
 	}
 
 	/** Documents in the given status (metrics). */
@@ -78,7 +109,8 @@ public class SyncStateStore {
 		for (Document doc : mongo.find(query(where("_id").in(ids)), Document.class, COLLECTION)) {
 			Date sentAt = doc.getDate("sentAt");
 			states.put(doc.getString("_id"), new SyncState(
-					LocalDate.parse(doc.getString("saleDate")),
+					RecordType.valueOf(doc.getString("type")),
+					LocalDate.parse(doc.getString("date")),
 					doc.getInteger("revision"),
 					Status.valueOf(doc.getString("status")),
 					doc.getInteger("attempts", 0),
@@ -88,7 +120,7 @@ public class SyncStateStore {
 	}
 
 	/** Called only after the branch broker acknowledged the message. */
-	public void markSent(LocalDate saleDate, int revision, UUID eventId, long offset) {
+	public void markSent(RecordType type, LocalDate date, int revision, UUID eventId, long offset) {
 		Instant now = clock.instant();
 		Document event = event(now, "SENT").append("eventId", eventId.toString()).append("offset", offset);
 		Update update = new Update()
@@ -100,7 +132,7 @@ public class SyncStateStore {
 				.inc("attempts", 1)
 				.addToSet("sentOffsets", offset);
 		update.push("history").slice(-HISTORY_SIZE).each(event);
-		writeUnlessFinal(saleDate, revision, update, event, offset);
+		writeUnlessFinal(type, date, revision, update, event, offset);
 	}
 
 	/**
@@ -108,7 +140,7 @@ public class SyncStateStore {
 	 * @param eventId the message that was not acknowledged, or null if no message could be written from the data.
 	 *                A message that was not acknowledged may still have reached Kafka, so HQ may still receive it.
 	 */
-	public void markFailed(LocalDate saleDate, int revision, String error, @Nullable UUID eventId) {
+	public void markFailed(RecordType type, LocalDate date, int revision, String error, @Nullable UUID eventId) {
 		Instant now = clock.instant();
 		String lastError = error.length() > MAX_ERROR_LENGTH ? error.substring(0, MAX_ERROR_LENGTH) : error;
 		Document event = event(now, "FAILED").append("error", lastError)
@@ -119,13 +151,12 @@ public class SyncStateStore {
 				.set("updatedAt", now)
 				.inc("attempts", 1);
 		update.push("history").slice(-HISTORY_SIZE).each(event);
-		writeUnlessFinal(saleDate, revision, update, event, null);
+		writeUnlessFinal(type, date, revision, update, event, null);
 	}
 
 	/**
-	 * Deletes the state of days HQ accepted whose last change is before {@code cutoff} (Q9). Days still waiting
-	 * (SENT, FAILED) or rejected by HQ are kept, whatever their age, so they stay visible.
-	 * @return number of documents deleted
+	 * Q9: deletes the documents of days HQ accepted whose last change is older than the cutoff.
+	 * @return how many were deleted
 	 */
 	public long deleteAcceptedBefore(Instant cutoff) {
 		return mongo.remove(query(where("status").is(Status.HQ_ACCEPTED.name()).and("updatedAt").lt(Date.from(cutoff))),
@@ -133,7 +164,7 @@ public class SyncStateStore {
 	}
 
 	/**
-	 * Applies an HQ receipt to the revision that was sent at its source offset.
+	 * Applies an HQ receipt to the revision of its type that was sent at its source offset.
 	 * @return false if no revision was sent at that offset (yet)
 	 */
 	public boolean applyReceipt(HqReceipt receipt) {
@@ -155,11 +186,12 @@ public class SyncStateStore {
 		}
 		update.push("history").slice(-HISTORY_SIZE).each(event);
 
-		Query sentAtOffset = query(where("sentOffsets").is(receipt.sourceOffset()));
+		Query sentAtOffset = query(where("type").is(receipt.type().name()).and("sentOffsets").is(receipt.sourceOffset()));
 		if (receipt.accepted()) {
 			return mongo.updateFirst(sentAtOffset, update, COLLECTION).getMatchedCount() > 0;
 		}
-		Query notAccepted = query(where("sentOffsets").is(receipt.sourceOffset()).and("status").ne(Status.HQ_ACCEPTED.name()));
+		Query notAccepted = query(where("type").is(receipt.type().name()).and("sentOffsets").is(receipt.sourceOffset())
+				.and("status").ne(Status.HQ_ACCEPTED.name()));
 		if (mongo.updateFirst(notAccepted, update, COLLECTION).getMatchedCount() > 0) {
 			return true;
 		}
@@ -171,9 +203,10 @@ public class SyncStateStore {
 	 * Upserts the document unless it is final. A final document (or a concurrent insert) makes the upsert fail on the
 	 * duplicate _id; then only the event is recorded.
 	 */
-	private void writeUnlessFinal(LocalDate saleDate, int revision, Update update, Document event, @Nullable Long offset) {
-		String id = SyncState.id(saleDate, revision);
-		update.setOnInsert("saleDate", saleDate.toString()).setOnInsert("revision", revision);
+	private void writeUnlessFinal(RecordType type, LocalDate date, int revision, Update update, Document event,
+			@Nullable Long offset) {
+		String id = SyncState.id(type, date, revision);
+		update.setOnInsert("type", type.name()).setOnInsert("date", date.toString()).setOnInsert("revision", revision);
 		try {
 			mongo.upsert(query(where("_id").is(id).and("status").nin(FINAL)), update, COLLECTION);
 		}

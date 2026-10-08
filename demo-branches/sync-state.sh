@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prints a demo branch's send state from its MongoDB (collection sync_state), one line per (saleDate, revision).
+# Prints a demo branch's send state from its MongoDB (collection sync_state), one line per (type, date, revision).
 #   demo-branches/sync-state.sh BR0001             # current status
 #   demo-branches/sync-state.sh BR0001 --history   # plus every event: send attempts and HQ receipts
 set -euo pipefail
@@ -12,7 +12,7 @@ docker compose -f docker-compose.yml -f "demo-branches/$branch.compose.yaml" exe
 const bkk = d => d ? d.toLocaleString(\"sv-SE\", { timeZone: \"Asia/Bangkok\" }) : \"\";
 db.sync_state.find().sort({ _id: 1 }).forEach(s => {
   const note = s.status === \"HQ_REJECTED\" ? s.hqDetail : (s.lastError || (s.hqOutcome ? s.hqOutcome + \" stored revision \" + s.hqStoredRevision : \"\"));
-  print([s.saleDate, \"r\" + s.revision, s.status.padEnd(11), \"attempts=\" + s.attempts, \"offsets=\" + (s.sentOffsets || []).join(\",\"), note].join(\"  \"));
+  print([(s.type === \"DAILY_RETURN\" ? \"RETURN \" : \"SALES  \") + s.date, \"r\" + s.revision, s.status.padEnd(11), \"attempts=\" + s.attempts, \"offsets=\" + (s.sentOffsets || []).join(\",\"), note].join(\"  \"));
   if (process.env.SHOW_HISTORY === \"--history\") {
     s.history.forEach(e => print(\"    \" + [bkk(e.at), e.result.padEnd(12), e.offset !== undefined ? \"offset=\" + e.offset : \"\", e.error || e.rejectReason || \"\"].join(\"  \")));
   }
